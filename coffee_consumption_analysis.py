@@ -1,11 +1,13 @@
-import pandas as pd
-import numpy as np
 import os
-from dataclasses import dataclass
-from typing import Tuple
-from datetime import timedelta, datetime
-from sklearn.linear_model import LinearRegression
+import unicodedata
 import warnings
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Iterable, Optional
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -18,303 +20,562 @@ class Config:
     gid_gramajes: str
     costo_cafetera: float
     fecha_compra: str = "30/05/2025"
-    ruta_csv: str = r"C:\Users\alber\OneDrive\Desktop\Tripleten\Cafetera\Cafe\historial_cafe.csv"
+    ruta_csv: str = (
+        r"C:\Users\alber\OneDrive\Desktop\Tripleten\Cafetera\Cafe"
+        r"\historial_cafe.csv"
+    )
+    guardar_snapshot: bool = True
 
 
-def predict_exhaustion_ml(diarios: pd.DataFrame, inv_actual_g: float) -> Tuple[float, float]:
-    if diarios is None or len(diarios) < 3 or inv_actual_g <= 0:
-        return 0.0, 0.0
-    df_ml = diarios.tail(15).copy().reset_index()
-    df_ml['n_dia'] = np.arange(len(df_ml))
-    X, y = df_ml[['n_dia']].values, df_ml['g_dia'].values
-    model = LinearRegression().fit(X, y)
-    ritmo = max(0.1, model.predict([[len(df_ml)]])[0])
-    return ritmo, inv_actual_g / ritmo
+def normalize_key(value: object) -> str:
+    text = str(value).strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join(text.split())
 
 
-def fetch_csv(id_pub, gid, nombre):
-    url = f"https://docs.google.com/spreadsheets/d/e/{id_pub}/pub?gid={gid}&single=true&output=csv"
+def find_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
+    by_normalized = {normalize_key(col): col for col in df.columns}
+    for candidate in candidates:
+        found = by_normalized.get(normalize_key(candidate))
+        if found is not None:
+            return found
+    return None
+
+
+def money(value: float) -> str:
+    return f"${value:,.2f} MXN"
+
+
+def season_name(month: int) -> str:
+    if month in (12, 1, 2):
+        return "invierno"
+    if month in (3, 4, 5):
+        return "primavera"
+    if month in (6, 7, 8):
+        return "verano"
+    return "otono"
+
+
+def weekday_name(day: int) -> str:
+    names = {
+        0: "lunes",
+        1: "martes",
+        2: "miercoles",
+        3: "jueves",
+        4: "viernes",
+        5: "sabado",
+        6: "domingo",
+    }
+    return names.get(int(day), "sin dia")
+
+
+def fetch_csv(id_pub: str, gid: str, nombre: str) -> Optional[pd.DataFrame]:
+    url = (
+        f"https://docs.google.com/spreadsheets/d/e/{id_pub}/pub?"
+        f"gid={gid}&single=true&output=csv"
+    )
     try:
         df = pd.read_csv(url, skip_blank_lines=True)
-        df.columns = [str(c).strip().lower() for c in df.columns]
+        df.columns = [normalize_key(c) for c in df.columns]
         return df
-    except Exception as e:
-        print(f"  ❌ Error de red en '{nombre}': {e}")
+    except Exception as exc:
+        print(f"❌ Error de red en '{nombre}': {exc}")
         return None
 
 
-def guardar_historico_csv(datos: dict, ruta: str):
-    """
-    Logica 'Upsert': Mantiene solo un registro por día.
-    """
-    fecha_hoy = datetime.now().strftime('%Y-%m-%d')
-    datos_ordenados = {'fecha_registro': fecha_hoy, **datos}
+def guardar_historico_csv(datos: dict, ruta: str) -> None:
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    datos_ordenados = {"fecha_registro": fecha_hoy, **datos}
     df_nuevo = pd.DataFrame([datos_ordenados])
 
     if os.path.exists(ruta):
         try:
             df_hist = pd.read_csv(ruta)
-            if 'fecha_registro' in df_hist.columns:
-                df_hist = df_hist[df_hist['fecha_registro'] != fecha_hoy]
-
+            if "fecha_registro" in df_hist.columns:
+                df_hist = df_hist[df_hist["fecha_registro"] != fecha_hoy]
             df_final = pd.concat([df_hist, df_nuevo], ignore_index=True)
-        except Exception as e:
-            print(f"⚠️ Error leyendo el histórico anterior. Detalle: {e}")
+        except Exception as exc:
+            print(f"⚠️ No se pudo leer el histórico anterior: {exc}")
             df_final = df_nuevo
     else:
         df_final = df_nuevo
 
     try:
-        df_final.to_csv(ruta, index=False, encoding='utf-8-sig')
-        print(
-            f"💾 Snapshot del día ({fecha_hoy}) guardado exitosamente en CSV.")
-    except Exception as e:
-        print(f"❌ Error crítico al guardar CSV: {e}")
-        print("💡 TIP: Asegúrate de cerrar el archivo en Excel antes de correr el código.")
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        df_final.to_csv(ruta, index=False, encoding="utf-8-sig")
+        print(f"💾 Snapshot diario ({fecha_hoy}) guardado en CSV.")
+    except Exception as exc:
+        print(f"❌ Error crítico al guardar CSV: {exc}")
+        print("💡 Tip: cierra el archivo en Excel antes de correr el código.")
 
 
-def run_dashboard(cfg: Config):
+def build_price_context(df_p: Optional[pd.DataFrame]) -> tuple[dict[int, float], float]:
+    precio_promedio = 55.45
+    precios_por_anio = {2025: precio_promedio}
+
+    if df_p is None:
+        return precios_por_anio, precio_promedio
+
+    anio_col = find_column(df_p, ["anio", "ano", "año", "year"])
+    precio_col = find_column(df_p, ["precio", "precio taza", "costo"])
+    if anio_col is None or precio_col is None:
+        return precios_por_anio, precio_promedio
+
+    df_p = df_p.copy()
+    df_p[anio_col] = pd.to_numeric(df_p[anio_col], errors="coerce").fillna(2025)
+    df_p[anio_col] = df_p[anio_col].astype(int)
+    df_p[precio_col] = pd.to_numeric(df_p[precio_col], errors="coerce")
+    precios_por_anio = df_p.groupby(anio_col)[precio_col].mean().dropna().to_dict()
+    precio_promedio = float(df_p[precio_col].mean())
+    return precios_por_anio, precio_promedio
+
+
+def build_gram_map(df_g: pd.DataFrame) -> tuple[dict[str, float], list[str]]:
+    tipo_col = find_column(df_g, ["tipo de bebida", "bebida", "tipo"])
+    cafe_g_col = find_column(df_g, ["cafe (g)", "cafe g", "gramos cafe"])
+    if tipo_col is None or cafe_g_col is None:
+        raise ValueError("La hoja de gramajes necesita tipo de bebida y cafe (g).")
+
+    tipos = df_g[tipo_col].astype(str).map(normalize_key)
+    gramos = pd.to_numeric(df_g[cafe_g_col], errors="coerce").fillna(0)
+    gramos_map = dict(zip(tipos, gramos))
+    return gramos_map, list(gramos_map.keys())
+
+
+def prepare_rows(
+    df_c: pd.DataFrame,
+    gramos_map: dict[str, float],
+    columnas_gramajes: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    col_fecha = find_column(df_c, ["fecha", "date"])
+    if col_fecha is None:
+        raise ValueError("La hoja de consumo necesita una columna fecha.")
+
+    costo_col = find_column(df_c, ["costo", "precio pagado"])
+    gramos_col = find_column(df_c, ["gramos", "gramaje", "peso"])
+    cierre_col = find_column(df_c, ["cierre", "fecha cierre"])
+    cafeteria_col = find_column(df_c, ["cafeteria", "cafe", "origen"])
+    tazas_total_col = find_column(df_c, ["# de tazas", "numero de tazas", "tazas"])
+
+    df = df_c.copy()
+    df["fecha_apertura"] = pd.to_datetime(df[col_fecha], dayfirst=True, errors="coerce")
+    df["cierre_crudo"] = (
+        df[cierre_col].astype(str).str.strip().str.lower()
+        if cierre_col
+        else pd.Series(dtype=str)
+    )
+    df["cierre_crudo"] = df["cierre_crudo"].replace(
+        ["nan", "nat", "none", "<na>", ""], np.nan
+    )
+    df["fecha_cierre"] = pd.to_datetime(df["cierre_crudo"], dayfirst=True, errors="coerce")
+    df["cafe"] = (
+        df[cafeteria_col].astype(str).str.strip().str.title()
+        if cafeteria_col
+        else "Sin Nombre"
+    )
+    df["cafe"] = df["cafe"].replace(["Nan", "Nat", "None", "<Na>", ""], "Sin Nombre")
+    df["gramos"] = (
+        pd.to_numeric(df[gramos_col], errors="coerce").fillna(0)
+        if gramos_col
+        else 0
+    )
+    df["costo"] = (
+        pd.to_numeric(df[costo_col], errors="coerce").fillna(0)
+        if costo_col
+        else 0
+    )
+
+    tazas_cols = [col for col in columnas_gramajes if col in df.columns]
+    if not tazas_cols:
+        raise ValueError("No encontré columnas de tazas que coincidan con gramajes.")
+
+    gramos_vec = np.array([gramos_map.get(col, 0.0) for col in tazas_cols])
+    df[tazas_cols] = df[tazas_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+    df["g_consumidos_est"] = (df[tazas_cols].to_numpy() * gramos_vec).sum(axis=1)
+    df["tazas_calculadas"] = df[tazas_cols].sum(axis=1)
+    if tazas_total_col:
+        df["tazas_total"] = pd.to_numeric(df[tazas_total_col], errors="coerce").fillna(
+            df["tazas_calculadas"]
+        )
+    else:
+        df["tazas_total"] = df["tazas_calculadas"]
+
+    df = df[df["gramos"] > 0].copy()
+    today = pd.Timestamp(datetime.now().date())
+    df["es_molido_anual"] = df["cafe"].str.contains("molido", case=False, na=False)
+    df["esta_cerrada"] = df["fecha_cierre"].notna()
+    df["fecha_fin_analitica"] = df["fecha_cierre"].fillna(today)
+    df["dias_ciclo"] = (df["fecha_fin_analitica"] - df["fecha_apertura"]).dt.days + 1
+    df["ciclo_valido"] = df["fecha_apertura"].notna() & (df["dias_ciclo"] > 0)
+    df["mes_apertura"] = df["fecha_apertura"].dt.month
+    df["anio_apertura"] = df["fecha_apertura"].dt.year
+    df["temporada_apertura"] = df["mes_apertura"].apply(
+        lambda value: season_name(value) if pd.notna(value) else "sin temporada"
+    )
+    df["g_por_taza"] = np.where(
+        df["tazas_total"] > 0, df["g_consumidos_est"] / df["tazas_total"], 0
+    )
+    df["costo_por_taza"] = np.where(df["tazas_total"] > 0, df["costo"] / df["tazas_total"], 0)
+    df["costo_por_250g"] = np.where(df["gramos"] > 0, df["costo"] / df["gramos"] * 250, 0)
+    df["tazas_por_250g"] = np.where(df["gramos"] > 0, df["tazas_total"] / df["gramos"] * 250, 0)
+    df["es_regalo"] = df["costo"] == 0
+    df["dia_cierre"] = df["fecha_cierre"].dt.weekday
+    df["dia_cierre_nombre"] = df["dia_cierre"].apply(
+        lambda value: weekday_name(value) if pd.notna(value) else "sin cierre"
+    )
+    df["tipo_dia_cierre"] = np.where(df["dia_cierre"].isin([5, 6]), "fin de semana", "entre semana")
+
+    return df.reset_index(drop=True), tazas_cols
+
+
+def distribute_cycles_by_day(cycles: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    valid = cycles[cycles["ciclo_valido"]].copy()
+
+    for _, row in valid.iterrows():
+        start = row["fecha_apertura"].normalize()
+        end = row["fecha_fin_analitica"].normalize()
+        days = int(row["dias_ciclo"])
+        if days <= 0:
+            continue
+
+        for date in pd.date_range(start, end):
+            rows.append(
+                {
+                    "fecha": date,
+                    "cafe": row["cafe"],
+                    "tazas": float(row["tazas_total"]) / days,
+                    "gramos": float(row["g_consumidos_est"]) / days,
+                    "estado": "cerrada" if row["esta_cerrada"] else "activa",
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=["fecha", "cafe", "tazas", "gramos", "estado"])
+    return pd.DataFrame(rows)
+
+
+MODEL_FEATURES = ["gramos", "costo", "costo_por_250g", "mes_apertura", "es_regalo"]
+
+
+def build_features(rows: pd.DataFrame) -> pd.DataFrame:
+    return pd.get_dummies(rows[MODEL_FEATURES + ["cafe"]], columns=["cafe"], dummy_na=False)
+
+
+def train_regression_model(
+    cycles: pd.DataFrame, target: str
+) -> tuple[Optional[RandomForestRegressor], list[str], Optional[float]]:
+    closed = cycles[
+        cycles["esta_cerrada"] & cycles["ciclo_valido"] & cycles[target].notna()
+    ].copy()
+    if len(closed) < 5:
+        return None, [], None
+
+    x = build_features(closed)
+    y = closed[target].astype(float)
+    errors = []
+
+    if len(closed) >= 7:
+        for idx in range(len(x)):
+            model = RandomForestRegressor(n_estimators=250, random_state=42, min_samples_leaf=1)
+            train_x = x.drop(x.index[idx])
+            train_y = y.drop(y.index[idx])
+            model.fit(train_x, train_y)
+            pred = float(model.predict(x.iloc[[idx]])[0])
+            errors.append(abs(pred - y.iloc[idx]))
+
+    model = RandomForestRegressor(n_estimators=400, random_state=42, min_samples_leaf=1)
+    model.fit(x, y)
+    mae = float(np.mean(errors)) if errors else None
+    return model, list(x.columns), mae
+
+
+def predict_rows(
+    model: Optional[RandomForestRegressor],
+    feature_columns: list[str],
+    rows: pd.DataFrame,
+    output_col: str,
+) -> pd.DataFrame:
+    result = rows.copy()
+    if result.empty or model is None:
+        result[output_col] = np.nan
+        return result
+
+    x = build_features(result).reindex(columns=feature_columns, fill_value=0)
+    result[output_col] = model.predict(x)
+    return result
+
+
+def run_dashboard(cfg: Config) -> None:
     df_c = fetch_csv(cfg.id_pub, cfg.gid_consumo, "Consumo")
     df_p = fetch_csv(cfg.id_pub, cfg.gid_precios, "Cafeterias")
     df_g = fetch_csv(cfg.id_pub, cfg.gid_gramajes, "Gramajes")
 
     if df_c is None or df_g is None:
-        print("🛑 Error crítico al descargar datos.")
+        print("🛑 Error crítico al descargar datos base.")
         return
 
-    # 1. MAPEO DE GRAMAJES
-    nombres_limpios = df_g['tipo de bebida'].astype(
-        str).str.strip().str.lower()
-    gramos_limpios = pd.to_numeric(df_g['café (g)'], errors='coerce').fillna(0)
-    gramos_map = dict(zip(nombres_limpios, gramos_limpios))
-    columnas_tazas = list(gramos_map.keys())
+    gramos_map, columnas_gramajes = build_gram_map(df_g)
+    precios_por_anio, precio_promedio_general = build_price_context(df_p)
+    all_rows, tazas_cols = prepare_rows(df_c, gramos_map, columnas_gramajes)
+    cycles = all_rows[~all_rows["es_molido_anual"]].copy()
 
-    # 2. PRECIOS DINÁMICOS
-    if df_p is not None and 'año' in df_p.columns and 'precio' in df_p.columns:
-        df_p['año'] = pd.to_numeric(
-            df_p['año'], errors='coerce').fillna(2025).astype(int)
-        precios_por_anio = df_p.groupby('año')['precio'].mean().to_dict()
-        precio_promedio_general = df_p['precio'].mean()
+    if cycles.empty:
+        print("🛑 No hay bolsas de café con gramos registrados para analizar.")
+        return
+
+    closed = cycles[cycles["esta_cerrada"] & cycles["ciclo_valido"]].copy()
+    active_all = cycles[~cycles["esta_cerrada"]].copy()
+
+    total_tazas_all = float(all_rows["tazas_total"].sum())
+    total_consumido_all_g = float(all_rows["g_consumidos_est"].sum())
+    cups_by_type = all_rows[tazas_cols].sum()
+
+    total_comprado_g = float(cycles["gramos"].sum())
+    total_consumido_g = float(cycles["g_consumidos_est"].sum())
+    inv_activo_estimado = max(
+        0.0, float(active_all["gramos"].sum() - active_all["g_consumidos_est"].sum())
+    )
+    merma_historica = max(0.0, total_comprado_g - total_consumido_g - inv_activo_estimado)
+
+    paid = cycles[cycles["costo"] > 0].copy()
+    gasto_real = float(paid["costo"].sum())
+    bolsas_pagadas = int(len(paid))
+    costo_promedio_bolsa_pagada = gasto_real / bolsas_pagadas if bolsas_pagadas else 0
+    costo_promedio_250g_pagado = (
+        gasto_real / paid["gramos"].sum() * 250 if not paid.empty and paid["gramos"].sum() else 0
+    )
+    costo_promedio_taza_real = (
+        gasto_real / cycles["tazas_total"].sum() if cycles["tazas_total"].sum() else 0
+    )
+
+    daily = distribute_cycles_by_day(cycles)
+    if not daily.empty:
+        daily["anio_mes"] = daily["fecha"].dt.to_period("M")
+        daily["mes"] = daily["fecha"].dt.month
+        daily["temporada"] = daily["mes"].apply(season_name)
+        monthly = daily.groupby("anio_mes").agg(
+            tazas=("tazas", "sum"),
+            gramos=("gramos", "sum"),
+            dias=("fecha", "nunique"),
+        )
+        monthly["tazas_dia"] = monthly["tazas"] / monthly["dias"]
+        seasonal = daily.groupby("temporada").agg(
+            tazas=("tazas", "sum"),
+            gramos=("gramos", "sum"),
+            dias=("fecha", "nunique"),
+        )
+        seasonal["tazas_dia"] = seasonal["tazas"] / seasonal["dias"]
     else:
-        precios_por_anio = {2025: 55.45}
-        precio_promedio_general = 55.45
+        monthly = pd.DataFrame()
+        seasonal = pd.DataFrame()
 
-    # 3. PROCESAMIENTO GENERAL
-    col_fecha = 'fecha'
-    df_c[col_fecha] = pd.to_datetime(
-        df_c.get(col_fecha), dayfirst=True, errors='coerce')
-    df_c['costo'] = pd.to_numeric(
-        df_c.get('costo', 0), errors='coerce').fillna(0)
-    df_c['gramos'] = pd.to_numeric(
-        df_c.get('gramos', 0), errors='coerce').fillna(0)
+    duration_model, duration_features, duration_mae = train_regression_model(cycles, "dias_ciclo")
+    cups_model, cups_features, cups_mae = train_regression_model(cycles, "tazas_total")
 
-    df_c['cierre_crudo'] = df_c.get('cierre', pd.Series(
-        dtype=str)).astype(str).str.strip().str.lower()
-    df_c['cierre_crudo'] = df_c['cierre_crudo'].replace(
-        ['nan', 'nat', 'none', '<na>', ''], np.nan)
-    df_c['cierre_dt'] = pd.to_datetime(
-        df_c['cierre_crudo'], dayfirst=True, errors='coerce')
+    active_predictions = predict_rows(
+        duration_model, duration_features, active_all[active_all["ciclo_valido"]], "dias_predichos_ml"
+    )
+    if not active_predictions.empty:
+        active_predictions["inventario_restante_g"] = np.maximum(
+            0, active_predictions["gramos"] - active_predictions["g_consumidos_est"]
+        )
+        active_predictions["ritmo_observado_g_dia"] = np.where(
+            active_predictions["dias_ciclo"] > 0,
+            active_predictions["g_consumidos_est"] / active_predictions["dias_ciclo"],
+            0,
+        )
+        active_predictions["dias_totales_por_ritmo"] = np.where(
+            active_predictions["ritmo_observado_g_dia"] > 0,
+            active_predictions["dias_ciclo"]
+            + active_predictions["inventario_restante_g"]
+            / active_predictions["ritmo_observado_g_dia"],
+            active_predictions["dias_predichos_ml"],
+        )
+        active_predictions["dias_predichos_ml"] = np.maximum(
+            active_predictions["dias_predichos_ml"],
+            active_predictions["dias_totales_por_ritmo"],
+        )
+        active_predictions["dias_restantes_ml"] = (
+            active_predictions["dias_predichos_ml"] - active_predictions["dias_ciclo"]
+        )
+        active_predictions["fecha_cierre_estimada_ml"] = active_predictions["fecha_apertura"] + active_predictions[
+            "dias_predichos_ml"
+        ].round().astype(int).apply(lambda days: timedelta(days=max(days - 1, 0)))
 
-    if 'cafeteria' in df_c.columns:
-        df_c['cafeteria'] = df_c['cafeteria'].astype(
-            str).str.strip().str.title()
-        df_c['cafeteria'] = df_c['cafeteria'].replace(
-            ['Nan', 'Nat', 'None', '<Na>'], '')
+    last_five = closed.sort_values("fecha_cierre", ascending=False).head(5).sort_values("fecha_cierre")
+    last_five = predict_rows(cups_model, cups_features, last_five, "tazas_proyectadas_ml")
+    last_five = predict_rows(duration_model, duration_features, last_five, "dias_proyectados_ml")
 
-    tazas_existentes = [t for t in columnas_tazas if t in df_c.columns]
-    gramos_vec = np.array([gramos_map.get(t, 0.0) for t in tazas_existentes])
+    if not monthly.empty:
+        top_month_label = str(monthly.sort_values("tazas_dia", ascending=False).index[0])
+        top_month = monthly.loc[monthly.sort_values("tazas_dia", ascending=False).index[0]]
+    else:
+        top_month_label = "Sin datos"
+        top_month = None
 
-    df_c[tazas_existentes] = df_c[tazas_existentes].apply(
-        pd.to_numeric, errors='coerce').fillna(0)
-    df_c['g_est'] = (df_c[tazas_existentes].to_numpy()
-                     * gramos_vec).sum(axis=1)
-    df_c['t_total'] = df_c[tazas_existentes].sum(axis=1)
+    if not seasonal.empty:
+        top_season_label = seasonal.sort_values("tazas_dia", ascending=False).index[0]
+        low_season_label = seasonal.sort_values("tazas_dia", ascending=True).index[0]
+        top_season = seasonal.loc[top_season_label]
+        low_season = seasonal.loc[low_season_label]
+    else:
+        top_season_label = "Sin datos"
+        low_season_label = "Sin datos"
+        top_season = None
+        low_season = None
 
-    # 4. BALANCE E INVENTARIO
-    df_compras = df_c[df_c['gramos'] > 0].copy()
-    cafe_comprado_g = df_compras['gramos'].sum()
-    cafe_consumido_g = df_c['g_est'].sum()
+    close_weekdays = closed[closed["fecha_cierre"].notna()]["dia_cierre_nombre"].value_counts()
+    close_day_types = closed[closed["fecha_cierre"].notna()]["tipo_dia_cierre"].value_counts()
+    most_common_close_day = close_weekdays.index[0] if not close_weekdays.empty else "Sin datos"
 
-    bolsas_activas = df_compras[pd.isna(
-        df_compras['cierre_dt']) & pd.isna(df_compras['cierre_crudo'])]
-    bolsas_activas = bolsas_activas[~bolsas_activas['cafeteria'].astype(
-        str).str.contains('molido', case=False, na=False)]
-
-    inv_real = 0.0
-    cafe_activo = "Ninguno"
-
-    if not bolsas_activas.empty:
-        nombres_lista = bolsas_activas[bolsas_activas['cafeteria']
-                                       != '']['cafeteria'].unique()
-        cafe_activo = " + ".join(nombres_lista) if len(
-            nombres_lista) > 0 else "Sin Nombre"
-
-        total_gramos_activos = bolsas_activas['gramos'].sum()
-        fecha_ultimo_cierre = df_compras['cierre_dt'].max()
-
-        if pd.notna(fecha_ultimo_cierre):
-            consumo_activo = df_c[df_c[col_fecha] >
-                                  fecha_ultimo_cierre]['g_est'].sum()
-        else:
-            consumo_activo = df_c['g_est'].sum()
-
-        inv_real = max(0.0, total_gramos_activos - consumo_activo)
-
-    diferencia_global = cafe_comprado_g - cafe_consumido_g
-    merma_historica = max(0.0, diferencia_global - inv_real)
-
-    # 5. ANÁLISIS FINANCIERO Y RENDIMIENTO
-    df_c_valid = df_c.dropna(subset=[col_fecha]).copy()
-    total_tazas = df_c['t_total'].sum()
-    costo_total_insumos = df_compras['costo'].sum()
-    costo_por_gramo = costo_total_insumos / \
-        cafe_comprado_g if cafe_comprado_g > 0 else 0
-    costo_promedio_taza_casa = (
-        cafe_consumido_g * costo_por_gramo) / total_tazas if total_tazas > 0 else 0
-
-    f_compra = pd.to_datetime(cfg.fecha_compra, dayfirst=True)
-    diarios = df_c_valid.groupby(df_c_valid[col_fecha].dt.normalize()).agg(
-        g_dia=('g_est', 'sum'), t_dia=('t_total', 'sum')
-    ).sort_index()
+    ranking = cycles[cycles["cafe"] != "Sin Nombre"]["cafe"].value_counts().head(5)
 
     ahorro_total = 0.0
-    if not diarios.empty:
-        rango = pd.date_range(start=f_compra, end=diarios.index.max())
-        diarios = diarios.reindex(rango).fillna(0)
-        diarios['año'] = diarios.index.year
-        diarios['precio_mercado_hoy'] = diarios['año'].map(
-            precios_por_anio).fillna(precio_promedio_general)
-        diarios['ahorro_dia'] = diarios['t_dia'] * \
-            diarios['precio_mercado_hoy']
-        diarios['ahorro_acum'] = diarios['ahorro_dia'].cumsum()
-
-        ahorro_total = diarios['ahorro_acum'].iloc[-1]
-
-        metricas_anuales = diarios.groupby('año').agg(
-            tazas_tot=('t_dia', 'sum'),
-            ahorro_tot=('ahorro_dia', 'sum')
+    if not daily.empty:
+        daily["anio"] = daily["fecha"].dt.year
+        daily["precio_mercado"] = daily["anio"].map(precios_por_anio).fillna(
+            precio_promedio_general
         )
-    else:
-        metricas_anuales = pd.DataFrame()
-
+        ahorro_total = float((daily["tazas"] * daily["precio_mercado"]).sum())
     ganancia_post_roi = max(0.0, ahorro_total - cfg.costo_cafetera)
 
-    # 6. ML PREDICTION Y RANKING
-    ritmo_ml, dias_ml = predict_exhaustion_ml(diarios, inv_real)
-    eta_ml = diarios.index.max() + timedelta(days=float(dias_ml)) if (dias_ml >
-                                                                      0 and not diarios.empty) else None
-
-    df_ranking = df_compras[~df_compras['cafeteria'].astype(
-        str).str.contains('molido', case=False, na=False)]
-    ranking_cafes = df_ranking[df_ranking['cafeteria']
-                               != '']['cafeteria'].value_counts()
-    ranking_cafes = ranking_cafes[ranking_cafes > 1]
-
-    # ==============================================================
-    # 📝 EXPORTACIÓN AL CSV (UPSERT)
-    # ==============================================================
-    totales_por_tipo = df_c[tazas_existentes].sum(
-    ).sort_values(ascending=False)
-
     datos_exportacion = {
-        'hora_ejecucion': datetime.now().strftime('%H:%M:%S'),
-        'cafe_activo': cafe_activo,
-        'inventario_restante_g': round(inv_real, 2),
-        'ritmo_consumo_g_dia': round(ritmo_ml, 2),
-        'eta_agotamiento': eta_ml.strftime('%Y-%m-%d') if eta_ml else "Sin datos",
-        'ahorro_bruto_acumulado_mxn': round(ahorro_total, 2),
-        'ganancia_post_roi_mxn': round(ganancia_post_roi, 2),
-        'costo_promedio_taza_casa_mxn': round(costo_promedio_taza_casa, 2),
-        'precio_promedio_calle_mxn': round(precio_promedio_general, 2),
-        'total_tazas_servidas': int(total_tazas),
-        'merma_historica_g': round(merma_historica, 2)
+        "hora_ejecucion": datetime.now().strftime("%H:%M:%S"),
+        "bolsas_analizadas": int(len(cycles)),
+        "bolsas_cerradas": int(len(closed)),
+        "bolsas_activas": int(len(active_all)),
+        "total_tazas_consumidas_incl_molido": int(total_tazas_all),
+        "total_consumido_g_incl_molido": round(total_consumido_all_g, 2),
+        "inventario_activo_estimado_g": round(inv_activo_estimado, 2),
+        "gasto_real_cafe_mxn": round(gasto_real, 2),
+        "costo_promedio_250g_pagado_mxn": round(costo_promedio_250g_pagado, 2),
+        "costo_promedio_taza_real_mxn": round(costo_promedio_taza_real, 2),
+        "mes_mayor_consumo": top_month_label,
+        "temporada_mayor_consumo": top_season_label,
+        "temporada_menor_consumo": low_season_label,
+        "dia_mas_comun_cierre_bolsa": most_common_close_day,
+        "ml_error_medio_dias": round(duration_mae, 2) if duration_mae is not None else "Sin validacion",
+        "ml_error_medio_tazas": round(cups_mae, 2) if cups_mae is not None else "Sin validacion",
     }
 
-    # Desglose de tazas por año para el CSV
-    if not metricas_anuales.empty:
-        for anio, row in metricas_anuales.iterrows():
-            if row['tazas_tot'] > 0:
-                datos_exportacion[f'tazas_totales_{anio}'] = int(
-                    row['tazas_tot'])
+    print("\n" + "═" * 72)
+    print("☕ COFFEE CONSUMPTION ANALYTICS · WIP EVOLUCION")
+    print("═" * 72)
 
-    # Tipos de tazas globales
-    for taza, cantidad in totales_por_tipo.items():
-        if cantidad > 0:
-            datos_exportacion[f'tazas_tipo_{taza}'] = int(cantidad)
+    print("\n🧠 LECTURA EJECUTIVA")
+    print(f" • Bolsas analizadas:        {len(cycles)} ({len(closed)} cerradas, {len(active_all)} activas)")
+    print(f" • Tazas consumidas:         {int(total_tazas_all)}")
+    print(f" • Total consumido:          {total_consumido_all_g:,.0f} g")
+    print(f" • Inventario activo est.:   {inv_activo_estimado:,.0f} g")
+    print(f" • Merma historica est.:     {merma_historica:,.0f} g")
+    print(f" • Gasto real en cafe:       {money(gasto_real)}")
+    print(f" • Promedio bolsa pagada:    {money(costo_promedio_bolsa_pagada)}")
+    print(f" • Promedio pagado/250g:     {money(costo_promedio_250g_pagado)}")
+    print(f" • Costo real por taza:      {money(costo_promedio_taza_real)}")
 
-    # ==============================================================
-    # 📊 REPORTE VISUAL (DASHBOARD EN CONSOLA)
-    # ==============================================================
-    print("\n" + "="*55)
-    print(" ☕ TABLERO DE DATOS CAFETERO")
-    print("="*55)
-
-    print("\n📦 INVENTARIO REAL Y SMART ML")
-    print(f" • Bolsa(s) Activa(s):         {cafe_activo}")
-    print(f" • Peso restante calculado:    {inv_real:.0f} g")
-    if eta_ml and inv_real > 0:
-        print(f" • Ritmo actual aprendido:     {ritmo_ml:.1f} g/día")
-        print(
-            f" • Fecha de agotamiento (ETA): {eta_ml.date()} (en {dias_ml:.1f} días)")
+    print("\n🤖 MODELO ML · POR QUE RANDOM FOREST")
+    print(" • Lo uso porque tus datos mezclan numeros, meses y nombres de cafe; captura relaciones no lineales sin pedir mucha preparacion.")
+    print(" • Error medio estimado = prueba leave-one-out: entreno con todas menos una bolsa y comparo contra la bolsa que deje fuera.")
+    if duration_model is None:
+        print(" • Faltan ciclos cerrados suficientes para entrenar duracion con confianza.")
     else:
-        print(" ⚠️  No hay datos suficientes para proyectar agotamiento.")
+        print(f" • Error duracion:           ±{duration_mae:.1f} dias por bolsa")
+    if cups_model is None:
+        print(" • Faltan ciclos cerrados suficientes para proyectar tazas con confianza.")
+    else:
+        print(f" • Error tazas:              ±{cups_mae:.1f} tazas por bolsa")
+    if not active_predictions.empty:
+        print(" • ETA para bolsas activas con fecha:")
+        for _, row in active_predictions.sort_values("dias_restantes_ml").iterrows():
+            print(
+                f"   - {row['cafe']}: {row['fecha_cierre_estimada_ml'].date()} "
+                f"({row['dias_restantes_ml']:.1f} dias restantes, {row['inventario_restante_g']:.0f} g)"
+            )
 
-    print("\n⚖️ BALANCE DE MATERIA (MERMAS Y PÉRDIDAS)")
-    print(f" • Total comprado (Histórico): {cafe_comprado_g:.0f} g")
-    print(f" • Total servido (Real):       {cafe_consumido_g:.0f} g")
-    print(f" • Diferencia global:          {diferencia_global:.0f} g")
-    print(f" • Merma histórica de bolsas:  {merma_historica:.0f} g")
+    print("\n🏆 RENDIMIENTO · ULTIMAS 5 BOLSAS CERRADAS")
+    if last_five.empty:
+        print(" • No hay ciclos cerrados suficientes.")
+    else:
+        for _, row in last_five.iterrows():
+            cierre = row["fecha_cierre"].date() if pd.notna(row["fecha_cierre"]) else "sin cierre"
+            tazas_ml = row["tazas_proyectadas_ml"]
+            dias_ml = row["dias_proyectados_ml"]
+            print(
+                f" • {cierre} | {row['cafe']}: "
+                f"{int(row['tazas_total'])} tazas reales vs {tazas_ml:.1f} ML | "
+                f"{int(row['dias_ciclo'])} dias reales vs {dias_ml:.1f} ML"
+            )
 
-    print("\n📅 ANÁLISIS DESAGREGADO POR AÑO")
-    print(f" 🏆 TOTAL HISTÓRICO:           {int(total_tazas)} tazas servidas")
-    if not metricas_anuales.empty:
-        for anio, row in metricas_anuales.iterrows():
-            precio_usado = precios_por_anio.get(anio, precio_promedio_general)
-            if row['tazas_tot'] > 0:
-                print(f" 🔹 AÑO {anio} | Mercado: ${precio_usado:.2f} MXN/taza")
-                print(
-                    f"    • Tazas consumidas:        {int(row['tazas_tot'])} tazas")
-                print(
-                    f"    • Ahorro generado:         ${row['ahorro_tot']:,.2f} MXN")
+    print("\n🗓️ CONSUMO MENSUAL Y ESTACIONAL")
+    if top_month is None:
+        print(" • No hay suficientes ciclos validos para distribuir consumo por mes.")
+    else:
+        print(
+            f" • Mes mas intenso:          {top_month_label} "
+            f"({top_month['tazas_dia']:.2f} tazas/dia, {top_month['gramos']:.0f} g)"
+        )
+        if top_season is not None and low_season is not None:
+            print(
+                f" • Temporada mas intensa:    {top_season_label} "
+                f"({top_season['tazas_dia']:.2f} tazas/dia)"
+            )
+            print(
+                f" • Temporada mas baja:       {low_season_label} "
+                f"({low_season['tazas_dia']:.2f} tazas/dia)"
+            )
+        print(" • Ultimos 6 meses:")
+        for period, row in monthly.tail(6).iterrows():
+            print(
+                f"   - {period}: {row['tazas']:.0f} tazas | "
+                f"{row['gramos']:.0f} g | {row['tazas_dia']:.2f} tazas/dia"
+            )
 
-    print("\n⏳ ESTADO DEL RETORNO DE INVERSIÓN (ROI)")
-    print(f" • Inversión (Máquina):        ${cfg.costo_cafetera:,.2f} MXN") 
-    print(f" • Ahorro Acumulado Bruto:     ${ahorro_total:,.2f} MXN")
+    print("\n📅 CIERRE DE BOLSAS")
+    if close_weekdays.empty:
+        print(" • No hay cierres suficientes para analizar dias.")
+    else:
+        print(f" • Dia donde mas terminas bolsas: {most_common_close_day}")
+        entre = int(close_day_types.get("entre semana", 0))
+        finde = int(close_day_types.get("fin de semana", 0))
+        print(f" • Cierres entre semana:     {entre}")
+        print(f" • Cierres fin de semana:    {finde}")
+
+    print("\n💰 ROI Y VALOR")
+    print(f" • Ahorro bruto estimado:    {money(ahorro_total)}")
     if ahorro_total >= cfg.costo_cafetera:
-        dia_roi = diarios[diarios['ahorro_acum']
-                          >= cfg.costo_cafetera].index[0]
-        print(f" ✅ ROI Alcanzado el:          {dia_roi.date()}")
-        print(f" 💵 Ganancia Post-ROI: ${ganancia_post_roi:,.2f} MXN")
+        print(f" ✅ Ganancia post-ROI:        {money(ganancia_post_roi)}")
     else:
-        print(
-            f" ⏳ Faltante para ROI:         ${(cfg.costo_cafetera - ahorro_total):,.2f} MXN")
+        print(f" ⏳ Faltante para ROI:        {money(cfg.costo_cafetera - ahorro_total)}")
 
-    print("\n☕ DESGLOSE DE TAZAS Y CAFÉS PREFERIDOS")
-    for taza, cantidad in totales_por_tipo.items():
+    print("\n☕ DESGLOSE DE TAZAS · ORDEN SHEETS")
+    for taza, cantidad in cups_by_type.items():
         if cantidad > 0:
-            print(f" • {taza:<10}: {int(cantidad):>4} tazas")
+            print(f" • {taza:<12}: {int(cantidad):>4} tazas")
 
-    print(f"\n🏷️ RANKING GLOBAL DE COMPRAS (Recurrentes)")
-    if not ranking_cafes.empty:
-        for cafe, veces in ranking_cafes.head(5).items():
-            print(f" • {cafe}: {veces} compras")
+    print("\n🏷️ TOP 5 CAFES MAS COMPRADOS")
+    if ranking.empty:
+        print(" • Aun no hay compras registradas para ranking.")
     else:
-        print(" • Aún no hay cafés con más de 1 compra.")
+        for cafe, veces in ranking.items():
+            print(f" • {cafe}: {veces} compras")
 
-    print("="*55)
+    print("═" * 72)
 
-    # 💾 Ejecutar guardado (Upsert Diario)
-    guardar_historico_csv(datos_exportacion, cfg.ruta_csv)
+    if cfg.guardar_snapshot:
+        guardar_historico_csv(datos_exportacion, cfg.ruta_csv)
+    else:
+        print("🧪 Modo WIP: snapshot no guardado.")
 
 
 if __name__ == "__main__":
     ID_PUB = "2PACX-1vTdOWbzsFlVlSTBguq9_cjLXzvDO-uUqnIY4zaex27J4biHRk2t5u7aCHShyaCVmKhtJ12XLDQ8Nu2n"
     config = Config(
         id_pub=ID_PUB,
-        # Importante: Mantén tus GID de consumo, precios y gramajes tal cual los necesitas.
         gid_consumo="0",
         gid_precios="49728846",
         gid_gramajes="1827085190",
-        costo_cafetera=12239
+        costo_cafetera=12239,
     )
     run_dashboard(config)

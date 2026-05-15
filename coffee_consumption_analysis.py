@@ -475,9 +475,7 @@ def run_dashboard(cfg: Config) -> None:
     print(f" • Promedio pagado/250g:     {money(costo_promedio_250g_pagado)}")
     print(f" • Costo real por taza:      {money(costo_promedio_taza_real)}")
 
-    print("\n🤖 MODELO ML · POR QUE RANDOM FOREST")
-    print(" • Lo uso porque tus datos mezclan numeros, meses y nombres de cafe; captura relaciones no lineales sin pedir mucha preparacion.")
-    print(" • Error medio estimado = prueba leave-one-out: entreno con todas menos una bolsa y comparo contra la bolsa que deje fuera.")
+    print("\n🤖 MODELO ML ")
     if duration_model is None:
         print(" • Faltan ciclos cerrados suficientes para entrenar duracion con confianza.")
     else:

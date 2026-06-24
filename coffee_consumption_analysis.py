@@ -5,6 +5,10 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
+import json
+from dotenv import load_dotenv
+import gspread
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -19,6 +23,18 @@ from sklearn.linear_model import (
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+load_dotenv()
+
+def connect_google_sheets():
+    credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
+    sheet_name = os.getenv("GOOGLE_SHEET_NAME")
+
+    try:
+        gc = gspread.service_account()
+        return gc
+    except Exception as exc:
+        print(f"❌ Error al conectar con Google Sheets: {exc}")
+        return None
 
 @dataclass(frozen=True)
 class Config:
@@ -420,6 +436,19 @@ def run_dashboard(cfg: Config) -> None:
     if cycles.empty:
         print("🛑 No hay bolsas de café con gramos registrados para analizar.")
         return
+
+    def reportar_fechas_invalidas(df: pd.DataFrame) -> None:
+        mascara = df["fecha_cierre"] < df["fecha_apertura"]
+        errores = df[mascara]
+    
+        for _, fila in errores.iterrows():
+            print(
+                f"⚠️  {fila['cafe']}: "
+                f"cierre ({fila['fecha_cierre'].strftime('%d/%m/%Y')}) "
+                f"es anterior a la apertura ({fila['fecha_apertura'].strftime('%d/%m/%Y')})"
+            )
+
+    reportar_fechas_invalidas(cycles)
 
     conteo_cafe = cycles["cafe"].value_counts()
     cycles["cafe_modelo"] = np.where(
@@ -890,4 +919,3 @@ if __name__ == "__main__":
         costo_cafetera=12239,
     )
     run_dashboard(config)
-    

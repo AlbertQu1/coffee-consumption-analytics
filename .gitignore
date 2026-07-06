@@ -1,0 +1,9 @@
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.vscode/
+
+coffee_WIP.py
+historial_cafe.csv
+.env
+*.json

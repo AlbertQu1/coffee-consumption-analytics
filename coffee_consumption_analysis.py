@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 import json
+import numpy_financial as npf
 from dotenv import load_dotenv
 import gspread
+import requests
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -16,6 +18,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import (
     ElasticNet, ElasticNetCV,
     Lasso, LassoCV,
@@ -158,6 +161,34 @@ def build_price_context(df_p: Optional[pd.DataFrame]) -> tuple[dict[int, float],
     precio_promedio = float(df_p[precio_col].mean())
     return precios_por_anio, precio_promedio
 
+
+def fetch_cetes_rate() -> float:
+    token= os.getenv("BANXICO_TOKEN")
+    if not token:
+        print("⚠️ No se encontró el token de Banxico en las variables de entorno. — usando tasa por defecto 10%")
+        return 0.10
+    try:
+        url = "https://www.banxico.org.mx/SieAPIRest/service/v1/series/SF43936/datos/oportuno"
+        headers = {"Bmx-Token": token}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        dato = response.json()["bmx"]["series"][0]["datos"][0]["dato"]
+        return round(float(dato) / 100,6)
+    except Exception as exc:
+        print(f"⚠️ Error al obtener la tasa de Cetes: {exc} — usando tasa por defecto 10%")
+        return 0.10
+        
+def calcular_van_tir(costo_inicial: float, ahorro_mensual: float, meses: int, tasa_anual: float) -> dict:
+    tasa_mensual = tasa_anual / 12
+    flujos= [-costo_inicial] + [ahorro_mensual] * meses
+    van= npf.npv(tasa_mensual, flujos)
+    tir_mensual= npf.irr(flujos)
+    tir_anual= (1+ tir_mensual)**12 - 1 if tir_mensual is not None else None
+    return {
+        "van": round(van,2),
+        "tir_anual": round(tir_anual * 100,2) if tir_anual else None,
+        "tasa_descuento": round(tasa_anual *100, 2)
+    }
 
 def build_gram_map(df_g: pd.DataFrame) -> tuple[dict[str, float], list[str]]:
     tipo_col = find_column(df_g, ["tipo de bebida", "bebida", "tipo"])
@@ -676,6 +707,8 @@ def run_dashboard(cfg: Config) -> None:
     dias_desde_compra = (datetime.now() - fecha_compra_dt).days
     meses_desde_compra = round(dias_desde_compra / 30.44, 1)
     ahorro_por_mes = ahorro_neto_total / meses_desde_compra if meses_desde_compra > 0 else 0.0
+    tasa_cetes =fetch_cetes_rate()
+    van_tir = calcular_van_tir(cfg.costo_cafetera, ahorro_por_mes, int(meses_desde_compra), tasa_cetes)
 
     datos_exportacion = {
         "hora_ejecucion": datetime.now().strftime("%H:%M:%S"),
@@ -913,6 +946,10 @@ def run_dashboard(cfg: Config) -> None:
         faltante = cfg.costo_cafetera - ahorro_neto_total
         meses_para_roi = faltante / ahorro_por_mes if ahorro_por_mes > 0 else float("inf")
         print(f" ⏳ Faltante para ROI:        {money(faltante)} (~{meses_para_roi:.1f} meses)")
+    print(f"\n📊 VAN / TIR  (CETES {van_tir['tasa_descuento']}%)")
+    print(f" • VAN:  {money(van_tir['van'])}")
+    if van_tir['tir_anual']:
+        print(f" • TIR:  {van_tir['tir_anual']}% anual")  
 
     print("\n☕ DESGLOSE DE TAZAS · ORDEN SHEETS")
     for taza, cantidad in cups_by_type.items():

@@ -15,6 +15,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import numpy as np
 import pandas as pd
+from sklearn.neighbors import KNeighborsRegressor
 from sklearn.linear_model import (
     ElasticNet, ElasticNetCV,
     Lasso, LassoCV,
@@ -42,6 +43,7 @@ class Config:
     gid_consumo: str
     gid_precios: str
     gid_gramajes: str
+    gid_merma: str
     costo_cafetera: float
     fecha_compra: str = "30/05/2025"
     ruta_csv: str = (
@@ -168,11 +170,25 @@ def build_gram_map(df_g: pd.DataFrame) -> tuple[dict[str, float], list[str]]:
     gramos_map = dict(zip(tipos, gramos))
     return gramos_map, list(gramos_map.keys())
 
+def build_merma_map(df_m: pd.DataFrame) -> dict[tuple[str, str], float]:
+    fecha_col = find_column(df_m, ["fecha"])
+    cafe_col = find_column(df_m, ["cafe"])
+    merma_col = find_column(df_m, ["perdida"])
+    if fecha_col is None or cafe_col is None:
+        raise ValueError("La fecha de merma es incorrecta o el cafe ingresado es inválido.")
+    
+    cafe= df_m[cafe_col].astype(str).map(normalize_key)
+    fecha= pd.to_datetime(df_m[fecha_col], dayfirst=True, errors="coerce")
+    merma= pd.to_numeric(df_m[merma_col], errors="coerce").fillna(0)
+    merma_map= {(cafe.iloc[i], fecha.iloc[i]): merma.iloc[i] for i in range(len(cafe))}
+    return merma_map
+
 
 def prepare_rows(
     df_c: pd.DataFrame,
     gramos_map: dict[str, float],
     columnas_gramajes: list[str],
+    merma_map: dict =None,
 ) -> tuple[pd.DataFrame, list[str]]:
     col_fecha = find_column(df_c, ["fecha", "date"])
     if col_fecha is None:
@@ -220,9 +236,19 @@ def prepare_rows(
         else 0
     )
 
+    if merma_map is None:
+        merma_map = {}
+    df["merma_manual"] = [
+        merma_map.get((normalize_key(c), f), 0.0)
+        for c, f in zip(df["cafe"], df["fecha_apertura"])
+    ]
+    df["gramos_efectivos"] = (df["gramos"] - df["merma_manual"]).clip(lower=0)
+
     tazas_cols = [col for col in columnas_gramajes if col in df.columns]
     if not tazas_cols:
         raise ValueError("No encontré columnas de tazas que coincidan con gramajes.")
+
+    
 
     gramos_vec = np.array([gramos_map.get(col, 0.0) for col in tazas_cols])
     df[tazas_cols] = df[tazas_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
@@ -252,7 +278,7 @@ def prepare_rows(
     )
     df["costo_por_taza"] = np.where(df["tazas_total"] > 0, df["costo"] / df["tazas_total"], 0)
     df["costo_por_250g"] = np.where(df["gramos"] > 0, df["costo"] / df["gramos"] * 250, 0)
-    df["tazas_por_250g"] = np.where(df["gramos"] > 0, df["tazas_total"] / df["gramos"] * 250, 0)
+    df["tazas_por_250g"] = np.where(df["gramos_efectivos"] > 0, df["tazas_total"] / df["gramos_efectivos"] * 250, 0)
     df["es_regalo"] = df["costo"] == 0
     df["dia_cierre"] = df["fecha_cierre"].dt.weekday
     df["dia_cierre_nombre"] = df["dia_cierre"].apply(
@@ -291,8 +317,8 @@ def distribute_cycles_by_day(cycles: pd.DataFrame) -> pd.DataFrame:
 
 
 MODEL_VERSION = "auto_v1"
-FEATURES_TAZAS = ["gramos", "costo_por_250g", "mes_apertura", "es_regalo"]
-FEATURES_DURACION = ["gramos", "mes_apertura", "es_regalo"]
+FEATURES_TAZAS = ["gramos", "mes_apertura"]
+FEATURES_DURACION = ["gramos", "mes_apertura"]
 
 # P4: variables solo disponibles DESPUÉS de cerrar la bolsa — nunca deben ser features
 VARIABLES_POST_CIERRE: frozenset[str] = frozenset({
@@ -307,7 +333,7 @@ def build_features(rows: pd.DataFrame, features: list[str], use_cafe_modelo: boo
     return rows[features].copy()
 
 
-def _loo_mae(model_class, params: dict, x: pd.DataFrame, y: pd.Series) -> Optional[float]:
+def _loo_mae(model_class, params: dict, x: pd.DataFrame, y: pd.Series, scale=False) -> Optional[float]:
     if len(x) < 5:
         return None
     errors = []
@@ -356,6 +382,7 @@ def train_best_model(
         "Lasso": (Lasso, {"alpha": lasso_cv.alpha_, "max_iter": 10000}),
         "Ridge": (Ridge, {"alpha": ridge_cv.alpha_}),
         "ElasticNet": (ElasticNet, {"alpha": en_cv.alpha_, "l1_ratio": en_cv.l1_ratio_, "max_iter": 10000}),
+        "KNN": (KNeighborsRegressor, {"n_neighbors": 3})
     }
 
     # Benchmark con cafe_modelo
@@ -423,6 +450,7 @@ def run_dashboard(cfg: Config) -> None:
     df_c = fetch_csv(cfg.id_pub, cfg.gid_consumo, "Consumo")
     df_p = fetch_csv(cfg.id_pub, cfg.gid_precios, "Cafeterias")
     df_g = fetch_csv(cfg.id_pub, cfg.gid_gramajes, "Gramajes")
+    df_m = fetch_csv(cfg.id_pub, cfg.gid_merma, "Merma")
 
     if df_c is None or df_g is None:
         print("🛑 Error crítico al descargar datos base.")
@@ -430,7 +458,8 @@ def run_dashboard(cfg: Config) -> None:
 
     gramos_map, columnas_gramajes = build_gram_map(df_g)
     precios_por_anio, precio_promedio_general = build_price_context(df_p)
-    all_rows, tazas_cols = prepare_rows(df_c, gramos_map, columnas_gramajes)
+    merma_map = build_merma_map(df_m)
+    all_rows, tazas_cols = prepare_rows(df_c, gramos_map, columnas_gramajes, merma_map)
     cycles = all_rows[~all_rows["es_molido_anual"]].copy()
 
     if cycles.empty:
@@ -916,6 +945,7 @@ if __name__ == "__main__":
         gid_consumo="0",
         gid_precios="49728846",
         gid_gramajes="1827085190",
+        gid_merma= "1861632685",
         costo_cafetera=12239,
     )
     run_dashboard(config)

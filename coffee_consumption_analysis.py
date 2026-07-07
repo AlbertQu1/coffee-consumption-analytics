@@ -49,6 +49,8 @@ class Config:
     gid_merma: str
     costo_cafetera: float
     fecha_compra: str = "30/05/2025"
+    latitud: float = 19.4326
+    longitud: float = -99.1332
     ruta_csv: str = (
         r"C:\Users\alber\OneDrive\Desktop\Tripleten\Cafetera\Cafe"
         r"\historial_cafe.csv"
@@ -178,6 +180,28 @@ def fetch_cetes_rate() -> float:
         print(f"⚠️ Error al obtener la tasa de Cetes: {exc} — usando tasa por defecto 10%")
         return 0.10
         
+def fetch_weather_data(latitud: float, longitud: float, fecha_inicio: str, fecha_fin:str) -> pd.DataFrame:
+    url =(
+        f"https://archive-api.open-meteo.com/v1/archive?"
+        f"latitude={latitud}&longitude={longitud}"
+        f"&start_date={fecha_inicio}&end_date={fecha_fin}"
+        f"&daily=temperature_2m_mean,precipitation_sum"
+        f"&timezone=America%2FMexico_City"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()["daily"]
+        df = pd.DataFrame({
+            "fecha": pd.to_datetime(data["time"]),
+            "temp_mean": data["temperature_2m_mean"],
+            "precipitacion": data["precipitation_sum"]
+        })
+        return df
+    except Exception as exc:
+        print(f"⚠️ Error al obtener datos meteorológicos: {exc}")
+        return pd.DataFrame()
+
 def calcular_van_tir(costo_inicial: float, ahorro_mensual: float, meses: int, tasa_anual: float) -> dict:
     tasa_mensual = tasa_anual / 12
     flujos= [-costo_inicial] + [ahorro_mensual] * meses
@@ -492,6 +516,25 @@ def run_dashboard(cfg: Config) -> None:
     merma_map = build_merma_map(df_m)
     all_rows, tazas_cols = prepare_rows(df_c, gramos_map, columnas_gramajes, merma_map)
     cycles = all_rows[~all_rows["es_molido_anual"]].copy()
+    fecha_inicio = cycles["fecha_apertura"].min().strftime("%Y-%m-%d")
+    fecha_fin = datetime.now().strftime("%Y-%m-%d")
+    df_weather = fetch_weather_data(cfg.latitud, cfg.longitud, fecha_inicio, fecha_fin)
+    if not df_weather.empty:
+        df_weather["anio_mes"] = df_weather["fecha"].dt.to_period("M")
+        monthly_weather = df_weather.groupby("anio_mes").agg(
+            temp_mean=("temp_mean", "mean"),
+            precipitation=("precipitacion", "sum")
+        ).round(2)
+    else:
+        monthly_weather = pd.DataFrame()
+    if not df_weather.empty:
+        df_weather["temporada"] = df_weather["fecha"].dt.month.apply(season_name)
+        seasonal_weather = df_weather.groupby("temporada").agg(
+            temp_mean=("temp_mean", "mean"),
+            precipitation=("precipitacion", "sum")
+        ).round(2)
+    else:
+        seasonal_weather = pd.DataFrame()
 
     if cycles.empty:
         print("🛑 No hay bolsas de café con gramos registrados para analizar.")
@@ -899,25 +942,22 @@ def run_dashboard(cfg: Config) -> None:
     if top_month is None:
         print(" • No hay suficientes ciclos validos para distribuir consumo por mes.")
     else:
-        print(
-            f" • Mes mas intenso:          {top_month_label} "
-            f"({top_month['tazas_dia']:.2f} tazas/dia, {top_month['gramos']:.0f} g)"
-        )
+        w_top = monthly_weather.loc[top_month_label] if top_month_label in monthly_weather.index else None
+        clima_top = f" | {w_top['temp_mean']:.1f}°C | {w_top['precipitation']:.1f}mm" if w_top is not None else ""
+        print(f" • Mes mas intenso:          {top_month_label} ({top_month['tazas_dia']:.2f} tz/día{clima_top})")
         if top_season is not None and low_season is not None:
-            print(
-                f" • Temporada mas intensa:    {top_season_label} "
-                f"({top_season['tazas_dia']:.2f} tazas/dia)"
-            )
-            print(
-                f" • Temporada mas baja:       {low_season_label} "
-                f"({low_season['tazas_dia']:.2f} tazas/dia)"
-            )
+            w_top_s = seasonal_weather.loc[top_season_label] if top_season_label in seasonal_weather.index else None
+            w_low_s = seasonal_weather.loc[low_season_label] if low_season_label in seasonal_weather.index else None
+            clima_top_s = f" | {w_top_s['temp_mean']:.1f}°C | {w_top_s['precipitation']:.1f}mm" if w_top_s is not None else ""
+            clima_low_s = f" | {w_low_s['temp_mean']:.1f}°C | {w_low_s['precipitation']:.1f}mm" if w_low_s is not None else ""
+            print(f" • Temporada mas intensa:    {top_season_label} ({top_season['tazas_dia']:.2f} tz/día{clima_top_s})")
+            print(f" • Temporada mas baja:       {low_season_label} ({low_season['tazas_dia']:.2f} tz/día{clima_low_s})")
         print(" • Ultimos 6 meses:")
         for period, row in monthly.tail(6).iterrows():
-            print(
-                f"   - {period}: {row['tazas']:.0f} tazas | "
-                f"{row['gramos']:.0f} g | {row['tazas_dia']:.2f} tazas/dia"
-            )
+            w = monthly_weather.loc[period] if period in monthly_weather.index else None
+            clima = f" | {w['temp_mean']:.1f}°C | {w['precipitation']:.1f}mm" if w is not None else ""
+            print(f"   - {period}: {row['tazas']:.0f} tz | {row['tazas_dia']:.2f} tz/día{clima}")
+
 
     print("\n📅 CIERRE DE BOLSAS")
     if close_weekdays.empty:

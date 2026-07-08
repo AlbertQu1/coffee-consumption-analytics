@@ -393,9 +393,16 @@ def _loo_mae(model_class, params: dict, x: pd.DataFrame, y: pd.Series, scale=Fal
         return None
     errors = []
     for idx in range(len(x)):
+        x_train = x.drop(x.index[idx])
+        x_test = x.iloc[[idx]]
+        y_train = y.drop(y.index[idx])
+        if scale:
+            scaler = StandardScaler()
+            x_train = scaler.fit_transform(x_train)
+            x_test = scaler.transform(x_test)
         m = model_class(**params)
-        m.fit(x.drop(x.index[idx]), y.drop(y.index[idx]))
-        errors.append(abs(float(m.predict(x.iloc[[idx]])[0]) - y.iloc[idx]))
+        m.fit(x_train, y_train)
+        errors.append(abs(float(m.predict(x_test)[0]) - y.iloc[idx]))
     return float(np.mean(errors))
 
 
@@ -434,35 +441,35 @@ def train_best_model(
     en_cv.fit(x_con, y)
 
     candidates = {
-        "Lasso": (Lasso, {"alpha": lasso_cv.alpha_, "max_iter": 10000}),
-        "Ridge": (Ridge, {"alpha": ridge_cv.alpha_}),
-        "ElasticNet": (ElasticNet, {"alpha": en_cv.alpha_, "l1_ratio": en_cv.l1_ratio_, "max_iter": 10000}),
-        "KNN": (KNeighborsRegressor, {"n_neighbors": 3})
+        "Lasso": (Lasso, {"alpha": lasso_cv.alpha_, "max_iter": 10000}, False),
+        "Ridge": (Ridge, {"alpha": ridge_cv.alpha_}, False),
+        "ElasticNet": (ElasticNet, {"alpha": en_cv.alpha_, "l1_ratio": en_cv.l1_ratio_, "max_iter": 10000}, False),
+        "KNN": (KNeighborsRegressor, {"n_neighbors": 3}, True)
     }
 
     # Benchmark con cafe_modelo
     benchmark: dict[str, float] = {}
-    for name, (cls, params) in candidates.items():
-        mae_val = _loo_mae(cls, params, x_con, y)
+    for name, (cls, params, scale) in candidates.items():
+        mae_val = _loo_mae(cls, params, x_con, y, scale=scale)
         if mae_val is not None:
             benchmark[name] = mae_val
 
     winner_name = min(benchmark, key=lambda k: benchmark[k]) if benchmark else "ElasticNet"
-    cls_winner, params_winner = candidates[winner_name]
+    cls_winner, params_winner, scale_winner = candidates[winner_name]
     mae_con = benchmark.get(winner_name)
 
     # P1: probar si cafe_modelo realmente ayuda comparando MAE del ganador sin él
-    mae_sin = _loo_mae(cls_winner, params_winner, x_sin, y)
+    mae_sin = _loo_mae(cls_winner, params_winner, x_sin, y, scale=scale_winner)
 
     if mae_sin is not None and mae_con is not None and mae_sin <= mae_con:
         # cafe_modelo no aporta → recalcular benchmark completo sin él y elegir nuevo ganador
         benchmark = {}
-        for name, (cls, params) in candidates.items():
-            mae_val = _loo_mae(cls, params, x_sin, y)
+        for name, (cls, params, scale) in candidates.items():
+            mae_val = _loo_mae(cls, params, x_sin, y, scale=scale)
             if mae_val is not None:
                 benchmark[name] = mae_val
         winner_name = min(benchmark, key=lambda k: benchmark[k]) if benchmark else winner_name
-        cls_winner, params_winner = candidates[winner_name]
+        cls_winner, params_winner, scale_winner = candidates[winner_name]
         x = x_sin
         cafe_modelo_ayudo = False
     else:
@@ -472,7 +479,10 @@ def train_best_model(
     model = cls_winner(**params_winner)
     model.fit(x, y)
 
-    coefs = {f: float(c) for f, c in zip(x.columns, model.coef_)}
+    if hasattr(model, "coef_"):
+        coefs = {f: float(c) for f, c in zip(x.columns, model.coef_)}
+    else:
+        coefs = {}
     coefs_sorted = dict(sorted(coefs.items(), key=lambda kv: abs(kv[1]), reverse=True))
 
     meta = {

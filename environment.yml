@@ -1,0 +1,11 @@
+name: cafe
+channels:
+  - defaults
+dependencies:
+  - python=3.13
+  - scikit-learn
+  - pandas
+  - gspread
+  - python-dotenv
+  - numpy-financial
+

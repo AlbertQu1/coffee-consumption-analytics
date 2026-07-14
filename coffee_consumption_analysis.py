@@ -31,10 +31,8 @@ load_dotenv()
 
 def connect_google_sheets():
     credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
-    sheet_name = os.getenv("GOOGLE_SHEET_NAME")
-
     try:
-        gc = gspread.service_account()
+        gc = gspread.service_account(filename=credentials_path)
         return gc
     except Exception as exc:
         print(f"❌ Error al conectar con Google Sheets: {exc}")
@@ -47,6 +45,7 @@ class Config:
     gid_precios: str
     gid_gramajes: str
     gid_merma: str
+    gid_mantenimiento: str
     costo_cafetera: float
     fecha_compra: str = "30/05/2025"
     latitud: float = 19.4326
@@ -238,6 +237,24 @@ def build_merma_map(df_m: pd.DataFrame) -> dict[tuple[str, str], float]:
     merma_map= {(cafe.iloc[i], fecha.iloc[i]): merma.iloc[i] for i in range(len(cafe))}
     return merma_map
 
+def calcular_tazas_desde_mant(
+    df_mant: Optional[pd.DataFrame], daily: pd.DataFrame, tipo: str
+) -> Optional[float]:
+    if df_mant is None or daily.empty:
+        return None
+    fecha_col = find_column(df_mant, ["fecha"])
+    tipo_col  = find_column(df_mant, ["mantenimiento", "mant"])
+    tazas_col = find_column(df_mant, ["tazas"])
+    if fecha_col is None or tipo_col is None:
+        return None
+    df = df_mant.copy()
+    df[fecha_col] = pd.to_datetime(df[fecha_col], dayfirst=True, errors="coerce")
+    df[tipo_col]  = df[tipo_col].astype(str).str.strip().str.lower()
+    filtrado = df[df[tipo_col] == tipo.lower()]
+    if filtrado.empty:
+        return None
+    ultima_fecha = filtrado[fecha_col].max()
+    return round(float(daily[daily["fecha"] >= ultima_fecha]["tazas"].sum()))
 
 def prepare_rows(
     df_c: pd.DataFrame,
@@ -516,6 +533,7 @@ def run_dashboard(cfg: Config) -> None:
     df_p = fetch_csv(cfg.id_pub, cfg.gid_precios, "Cafeterias")
     df_g = fetch_csv(cfg.id_pub, cfg.gid_gramajes, "Gramajes")
     df_m = fetch_csv(cfg.id_pub, cfg.gid_merma, "Merma")
+    df_mant = fetch_csv(cfg.id_pub, cfg.gid_mantenimiento, "Mantenimiento")
 
     if df_c is None or df_g is None:
         print("🛑 Error crítico al descargar datos base.")
@@ -607,6 +625,28 @@ def run_dashboard(cfg: Config) -> None:
     total_consumido_all_g = float(all_rows["g_consumidos_est"].sum())
     cups_by_type = all_rows[tazas_cols].sum()
 
+    if df_mant is not None and cfg.gid_mantenimiento:
+        tazas_col_mant = find_column(df_mant, ["tazas"])
+        if tazas_col_mant is not None:
+            vacias = df_mant[
+                pd.to_numeric(df_mant[tazas_col_mant], errors="coerce").isna()
+            ]
+            if not vacias.empty:
+                gc = connect_google_sheets()
+                if gc is not None:
+                    try:
+                        SHEET_ID = "10AURqoaMgos31R2Vav0Wmjoa3Gy-HIV0ZGtwV8_UUDg"
+                        sh = gc.open_by_key(SHEET_ID)
+                        ws = sh.get_worksheet_by_id(int(cfg.gid_mantenimiento))
+                        for idx in vacias.index:
+                            row_sheets = idx + 2
+                            col_sheets = df_mant.columns.get_loc(tazas_col_mant) + 1
+                            ws.update_cell(row_sheets, col_sheets, int(total_tazas_all))
+                        print(f"✅ Tazas registradas en Mantenimiento: {int(total_tazas_all)}")
+                    except Exception as exc:
+                        print(f"⚠️ No se pudo escribir en Mantenimiento: {exc}")
+        
+
     inv_activo_estimado = max(
         0.0, float(active_all["gramos"].sum() - active_all["g_consumidos_est"].sum())
     )
@@ -651,6 +691,15 @@ def run_dashboard(cfg: Config) -> None:
     else:
         monthly = pd.DataFrame()
         seasonal = pd.DataFrame()
+
+    tazas_desde_clean = calcular_tazas_desde_mant(df_mant, daily, "clean")
+    tazas_desde_descale = calcular_tazas_desde_mant(df_mant, daily, "descale")
+    alertas_mant = []
+    if tazas_desde_clean is not None and tazas_desde_clean >= 200:
+        alertas_mant.append("Clean")
+    if tazas_desde_descale is not None and tazas_desde_descale >= 600:
+        alertas_mant.append("Descale")
+
 
     (duration_model, duration_features, duration_mae,
      duration_model_name, duration_coefs, duration_bench, duration_meta) = train_best_model(
@@ -1018,7 +1067,10 @@ def run_dashboard(cfg: Config) -> None:
             print(f" • {cafe}: {veces} compras")
 
     print("═" * 72)
+    status_mant = "⚠️  " + " · ".join(alertas_mant) if alertas_mant else "✅"
+    print(f"\n🔧 Mantenimiento {status_mant}")
 
+    print("═" * 72)
     if cfg.guardar_snapshot:
         guardar_historico_csv(datos_exportacion, cfg.ruta_csv)
     else:
@@ -1033,6 +1085,7 @@ if __name__ == "__main__":
         gid_precios="49728846",
         gid_gramajes="1827085190",
         gid_merma= "1861632685",
+        gid_mantenimiento="1040593728",
         costo_cafetera=12239,
     )
     run_dashboard(config)

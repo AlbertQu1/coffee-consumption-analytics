@@ -715,6 +715,11 @@ def run_dashboard(cfg: Config) -> None:
         active_all[active_all["ciclo_valido"]], "dias_predichos_ml",
         FEATURES_DURACION,
     )
+    active_predictions = predict_rows(
+    cups_model, cups_features,
+    active_predictions, "tazas_proyectadas_ml",
+    FEATURES_TAZAS,
+    )
     if not active_predictions.empty and duration_model is None and not closed.empty:
         media_ciclo = float(closed["dias_ciclo"].mean())
         active_predictions["dias_predichos_ml"] = media_ciclo
@@ -945,6 +950,8 @@ def run_dashboard(cfg: Config) -> None:
         print("   ✅ Sin leakage detectado en features actuales")
 
     pred_maquina = active_predictions[active_predictions.index.isin(en_maquina.index)] if not active_predictions.empty else pd.DataFrame()
+    if en_maquina.empty and en_espera.empty:
+        print("\n⚠️  Sin café disponible — comprar pronto")
     if not pred_maquina.empty:
         print(" • ETA bolsa en maquina:")
         for _, row in pred_maquina.sort_values("dias_restantes_ml").iterrows():
@@ -966,6 +973,9 @@ def run_dashboard(cfg: Config) -> None:
                 lo = max(0, dias_rest - duration_mae)
                 hi = dias_rest + duration_mae
                 print(f"     Rango dias restantes: {lo:.0f}–{hi:.0f} dias")
+                tazas_ml = row.get("tazas_proyectadas_ml", float("nan"))
+                if pd.notna(tazas_ml) and cups_mae is not None:
+                    print(f"     ML tazas estimadas: ~{tazas_ml:.0f} tazas (±{cups_mae:.1f})")
     if not en_espera.empty:
         print(f" • En espera ({len(en_espera)} bolsa(s) sin abrir):")
         for _, row in en_espera.iterrows():

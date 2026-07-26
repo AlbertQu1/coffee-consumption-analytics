@@ -46,6 +46,7 @@ class Config:
     gid_gramajes: str
     gid_merma: str
     gid_mantenimiento: str
+    sheet_id: str
     costo_cafetera: float
     fecha_compra: str = "30/05/2025"
     latitud: float = 19.4326
@@ -335,7 +336,7 @@ def prepare_rows(
 
     df = df[df["gramos"] > 0].copy()
     today = pd.Timestamp(datetime.now().date())
-    df["es_molido_anual"] = df["cafe"].str.contains("molido", case=False, na=False)
+    df["es_molido_anual"] = df["cafe"].str.contains(r"molido.*20\d\d", case=False, na=False, regex=True)
     df["esta_cerrada"] = df["fecha_cierre"].notna()
     df["fecha_fin_analitica"] = df["fecha_cierre"].fillna(today)
     df["dias_ciclo"] = (df["fecha_fin_analitica"] - df["fecha_apertura"]).dt.days + 1
@@ -635,8 +636,7 @@ def run_dashboard(cfg: Config) -> None:
                 gc = connect_google_sheets()
                 if gc is not None:
                     try:
-                        SHEET_ID = "10AURqoaMgos31R2Vav0Wmjoa3Gy-HIV0ZGtwV8_UUDg"
-                        sh = gc.open_by_key(SHEET_ID)
+                        sh = gc.open_by_key(cfg.sheet_id)
                         ws = sh.get_worksheet_by_id(int(cfg.gid_mantenimiento))
                         for idx in vacias.index:
                             row_sheets = idx + 2
@@ -1075,8 +1075,39 @@ def run_dashboard(cfg: Config) -> None:
     else:
         for cafe, veces in ranking.items():
             print(f" • {cafe}: {veces} compras")
+    print("\n📊 RANKING EFICIENCIA (bolsas pagadas, menor costo/taza = mejor)")
+    if paid.empty:
+        print(" • Sin bolsas pagadas registradas.")
+    else:
+        resumen = paid.groupby("cafe").agg(
+        costo_por_taza=("costo_por_taza", "mean"),
+        tazas=("tazas_total", "sum"),
+        compras=("costo", "count")
+    ).sort_values("costo_por_taza").head(5)
+    for cafe, r in resumen.iterrows():
+        print(f" • {cafe:<30} {money(r['costo_por_taza'])}/taza  |  {int(r['tazas'])} tazas  |  {int(r['compras'])} compra(s)")
+    print("═" * 72)
+
+    print("\n🔮 FORECAST")
+    prox_mes = (datetime.now().replace(day=1) + timedelta(days=32)).replace(day=1)
+    periodo_ref = pd.Period(prox_mes.replace(year=prox_mes.year - 1), "M")
+    if not monthly.empty and periodo_ref in monthly.index:
+        import calendar
+        tazas_dia_fc = monthly.loc[periodo_ref, "tazas_dia"]
+        dias_prox = calendar.monthrange(prox_mes.year, prox_mes.month)[1]
+        print(f" • Ritmo proyectado {prox_mes.strftime('%B %Y')}: {tazas_dia_fc:.2f} tz/día (base: {periodo_ref})")
+        if not pred_maquina.empty:
+            for _, row in pred_maquina.iterrows():
+                tazas_rest = max(0, row.get("tazas_proyectadas_ml", 0) - row["tazas_total"])
+                if tazas_dia_fc > 0 and tazas_rest > 0:
+                    dias_rest_fc = tazas_rest / tazas_dia_fc
+                    fecha_est_fc = datetime.now() + timedelta(days=dias_rest_fc)
+                    print(f"   → {row['cafe']}: ~{dias_rest_fc:.0f} días ({fecha_est_fc.strftime('%d %b %Y')})")
+    else:
+        print(f" • Sin datos de {periodo_ref} para proyectar.")
 
     print("═" * 72)
+
     status_mant = "⚠️  " + " · ".join(alertas_mant) if alertas_mant else "✅"
     print(f"\n🔧 Mantenimiento {status_mant}")
 
@@ -1088,14 +1119,15 @@ def run_dashboard(cfg: Config) -> None:
 
 
 if __name__ == "__main__":
-    ID_PUB = "2PACX-1vTdOWbzsFlVlSTBguq9_cjLXzvDO-uUqnIY4zaex27J4biHRk2t5u7aCHShyaCVmKhtJ12XLDQ8Nu2n"
+    load_dotenv()
     config = Config(
-        id_pub=ID_PUB,
+        id_pub=os.getenv("SHEET_ID_PUB", ""),
         gid_consumo="0",
         gid_precios="49728846",
         gid_gramajes="1827085190",
         gid_merma= "1861632685",
         gid_mantenimiento="1040593728",
         costo_cafetera=12239,
+        sheet_id="10AURqoaMgos31R2Vav0Wmjoa3Gy-HIV0ZGtwV8_UUDg"
     )
     run_dashboard(config)

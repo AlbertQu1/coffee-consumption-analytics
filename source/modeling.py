@@ -59,6 +59,7 @@ def train_best_model(cycles: pd.DataFrame, target: str, features: list[str]):
         "mae_with_coffee": None,
     }
     closed = cycles[cycles["status"] == "CLOSED"].copy()
+    closed = closed[closed["roaster"] != "Anual"]
     closed = closed[closed[target].notna()]
     if len(closed) < 3:
         return None, [], None, "ninguno", {}, {}, empty_meta
@@ -171,7 +172,7 @@ def predict_rows(
 
 def historical_rate_baseline_mae(df_bags: pd.DataFrame) -> Optional[float]:
     closed = df_bags[
-        (df_bags["status"] == "CLOSED") & (df_bags["cycle_days"] > 0)
+        (df_bags["status"] == "CLOSED") & (df_bags["cycle_days"] > 0) & (df_bags["roaster"] != "Anual")
     ].copy()
     if len(closed) < 5:
         return None

@@ -79,20 +79,26 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 
 ## Design Decisions Worth Highlighting
 
-- **Legacy vs. new data granularity is handled explicitly, not papered over.** Historical (pre-app) data only has per-bag aggregate counts; the new app captures true per-cup timestamps. Any analysis that needs per-cup detail (time-of-day, day-of-week patterns) is scoped to new data only, by design — legacy data is never backfilled with fabricated precision it doesn't have.
+- **Legacy vs. new data granularity is handled explicitly, not papered over.** Historical (pre-app) data only has per-bag aggregate cup-size counts; the new app captures true per-cup timestamps. Any analysis that needs per-cup detail (time-of-day, day-of-week patterns) is scoped to new data only, by design — legacy data is never backfilled with fabricated precision it doesn't have. Where legacy data does need reconstructed timestamps (e.g. distributing a bag's cup-size counts across its open/close window for monthly trend analysis), that limitation is documented, not hidden.
 - **A "grain" discipline runs through the whole pipeline**: `data_loader.py` never joins across tables that answer different questions (a bag purchase vs. a cup consumed vs. a maintenance event); combining them only happens in `cleaning.py`/`calculations.py`, deliberately.
-- **Two real data-quality bugs were caught by validating against actual data, not assumptions** — a `NaN`-vs-empty-string bug in a text field that `.fillna()` silently ignored, and a one-hot-encoding "memorization" bug from a synthetic test dataset with too many unique categories, mirroring a guardrail the original script had already engineered around.
+- **A recurring "special case" bag (a perpetual ground-coffee resource, not a normal purchase-to-empty cycle) is explicitly excluded from every pattern-based calculation** — ML training, historical-rate baselines, and recent-performance reporting all filter it out by the same rule, rather than letting it silently distort results in some places and not others.
+- **Real migrated data surfaced bugs that synthetic test data never would have** — validating against the actual multi-year history (not just hand-built seed rows) caught issues like a monthly consumption-rate metric that quietly assumed every day of the month had at least one log entry, and a top-coffees ranking that conflated two different roasters selling a similarly-named coffee. Fixing these against real data, rather than relying solely on synthetic tests, is treated as a required step before any production cutover.
 
 ---
 
 ## Roadmap (Active Development)
 
+**Done:**
+- One-time migration of the full historical record (bags, preparations reconstructed from cup-size counts, waste, cafeteria benchmarks) from the legacy Google Sheet into a disposable, freely-resettable test database — verified end to end (cup totals match the source exactly)
+- Prediction logging: every pipeline run stores a snapshot of its prediction for the active bag, so realized accuracy can be measured once that bag actually closes
+
+**Still pending:**
 - Finish writing pipeline outputs to Postgres/Google Sheets for Power BI, Looker Studio, and Tableau Public consumption
-- One-time migration of ~34 months of pre-app historical data (reconciled against known data-entry inconsistencies, documented and corrected)
 - Cutover to a dedicated production database, separate from the development/test database
-- Prediction logging: every model run against the active bag is stored, so realized accuracy can be measured once that bag actually closes
+- Build the actual prediction-vs-reality comparison report (the data is being logged; the comparison view isn't wired into the report output yet)
 - Vacation/guest-visit tracking to explain consumption dips and spikes that aren't seasonal
 - Home Assistant sensor integration to replace city-level weather with actual home climate data
+- Remote access via Tailscale, with logging screens restricted to the home network (VPN configured on the home server so far, not yet on mobile)
 
 ---
 

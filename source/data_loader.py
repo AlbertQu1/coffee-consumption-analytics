@@ -1,5 +1,5 @@
 from config import Config
-from sqlalchemy import create_engine 
+from sqlalchemy import create_engine, text
 import psycopg2
 import pandas as pd
 import requests
@@ -99,3 +99,24 @@ def fetch_weather_data(
     except Exception as exc:
        print(f"⚠️ Error al obtener datos meteorológicos: {exc}")
     return pd.DataFrame()
+
+def insert_bag_prediction(conn, bag_id, predicted_total_cups, predicted_cycle_days, cups_model, duration_model):
+    with conn.begin() as c:
+        c.execute(
+            text("""
+                INSERT INTO bag_predictions
+                    (bag_id, predicted_total_cups, predicted_cycle_days, cups_model, duration_model)
+                VALUES (:bag_id, :predicted_total_cups, :predicted_cycle_days, :cups_model, :duration_model)
+            """),
+            {
+                "bag_id": bag_id,
+                "predicted_total_cups": predicted_total_cups,
+                "predicted_cycle_days": predicted_cycle_days,
+                "cups_model": cups_model,
+                "duration_model": duration_model,
+            },
+        )
+        
+def fetch_bag_predictions(conn) -> pd.DataFrame:
+    sql = "SELECT bag_id, prediction_date, predicted_total_cups, predicted_cycle_days, cups_model, duration_model FROM bag_predictions"
+    return pd.read_sql_query(sql, conn)

@@ -36,15 +36,21 @@ def print_executive_summary(
     )
 
 
-def print_maintenance(alerts):
-    if alerts:
-        print(
-            f"\nAntes de seguir, un aviso importante: tu cafetera necesita {' y '.join(alerts).lower()} pronto."
-        )
-    else:
-        print(
-            "\nAntes de seguir, un chequeo rápido: tu cafetera está al día, no necesita mantenimiento todavía."
-        )
+def print_maintenance(status):
+    if status["needs_clean"] or status["needs_descale"]:
+        needed = []
+        if status["needs_clean"]:
+            needed.append("limpieza")
+        if status["needs_descale"]:
+            needed.append("descale")
+        print(f"\n🔧 Tu cafetera necesita {' y '.join(needed)} pronto.")
+        return
+
+    print("\n🔧 ✅ Cafetera al día.")
+    if status["remaining_to_clean"] is not None and status["remaining_to_clean"] < 20:
+        print(f"   Faltan {status['remaining_to_clean']} tazas para la próxima limpieza.")
+    if status["remaining_to_descale"] is not None and status["remaining_to_descale"] < 20:
+        print(f"   Faltan {status['remaining_to_descale']} tazas para el próximo descale.")
 
 
 def print_bag_status(active_bag_with_eta, active_forecast):
@@ -95,6 +101,17 @@ def print_monthly_seasonal(monthly, seasonal_traditional, seasonal_climate):
     for period, row in monthly.tail(6).iterrows():
         print(f"   - {period}: {row['total_cups']:.0f} tazas")
 
+def _correlation_strength(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value < 0.1:
+        return "prácticamente nula"
+    elif abs_value < 0.3:
+        return "débil"
+    elif abs_value < 0.5:
+        return "moderada"
+    elif abs_value < 0.7:
+        return "fuerte"
+    return "muy fuerte"
 
 def print_weather_and_trend(correlation, trend):
     direction_text = {
@@ -102,9 +119,17 @@ def print_weather_and_trend(correlation, trend):
         "decreasing": "va a la baja",
         "stable": "se mantiene estable",
     }.get(trend["trend_direction"], "sin tendencia clara")
+
+    slope = trend.get("slope")
+    slope_text = f" (cambia unas {abs(slope):.2f} tazas/día cada mes)" if slope is not None else ""
+
+    precip_corr = correlation["precipitation_correlation"]
+    temp_corr = correlation["temperature_correlation"]
+
+    print(f"\n🌦️ Tu consumo {direction_text} con el tiempo{slope_text}.")
     print(
-        f"\n🌦️ Tu consumo {direction_text} con el tiempo, sin una relación fuerte con el clima "
-        f"(correlacion lluvia: {correlation['precipitation_correlation']}, temperatura: {correlation['temperature_correlation']})."
+        f"   Relación con el clima: lluvia {_correlation_strength(precip_corr)} ({precip_corr}), "
+        f"temperatura {_correlation_strength(temp_corr)} ({temp_corr}) — basado en {correlation['sample_size']} bolsas."
     )
 
 
@@ -120,14 +145,11 @@ def print_roi_van_tir(savings, van_tir):
     if savings["profit_after_roi"] > 0:
         print(f" ✅ Ganancia post-ROI:        {money(savings['profit_after_roi'])}")
         print(
-            "   (ganancia real acumulada durante todo el tiempo de uso, sin tope de 12 meses)"
+            "   (ganancia real acumulada durante todo el tiempo de uso.)"
         )
     print(f"\n📊 VAN / TIR  (CETES {van_tir['discount_rate']}%)")
     print(
-        "   Nota: evaluado sobre 12 meses desde la fecha de compra del equipo (no año calendario ni tiempo total real)"
-    )
-    print(
-        "   — así cualquier inversión futura (equipo adicional, reventa) se puede comparar con el mismo criterio."
+        "   Nota: evaluado sobre 12 meses desde la fecha de compra del equipo (mayo 2025)"
     )
     print(f" • VAN:  {money(van_tir['npv'])}")
     if van_tir["annual_irr"]:
@@ -171,7 +193,7 @@ def print_ml_results(cups_result, duration_result, ritmo_mae, n_closed):
             print(f"   vs. ritmo historico: ±{ritmo_mae:.1f} dias  ({mejor})")
         helped = duration_meta.get("coffee_name_helped")
         print(
-            f"   coffee_name: {'incluido (ayuda)' if helped else 'excluido (no ayuda)'}"
+            f"   coffee_name: {'incluido (ayuda)' if helped else 'excluido'}"
         )
         active_coefs = [(f, c) for f, c in duration_coefs.items() if abs(c) >= 0.01]
         if active_coefs:
@@ -190,7 +212,7 @@ def print_ml_results(cups_result, duration_result, ritmo_mae, n_closed):
         print(f"   Benchmark: {bench_str}")
         helped = cups_meta.get("coffee_name_helped")
         print(
-            f"   coffee_name: {'incluido (ayuda)' if helped else 'excluido (no ayuda)'}"
+            f"   coffee_name: {'incluido (ayuda)' if helped else 'excluido'}"
         )
 
 
@@ -245,3 +267,15 @@ def print_purchase_locations(locations):
     print("\n🗺️ ORIGEN DE COMPRAS")
     for city, count in locations.items():
         print(f" • {city:<20} {count} bolsa(s)")
+
+def print_prediction_accuracy(accuracy: pd.DataFrame):
+    print("\n🎯 PRECISIÓN DE PREDICCIONES (bolsas ya cerradas)")
+    if accuracy.empty:
+        print(" • Aún no hay bolsas cerradas con predicción guardada para comparar.")
+        return
+    for _, row in accuracy.iterrows():
+        print(
+            f" • {row['coffee_name']}: predijo {row['predicted_total_cups']:.1f} tazas "
+            f"(real {row['total_cups']}, error {row['cups_error']:+.1f}) | "
+            f"{row['predicted_cycle_days']:.1f} días (real {row['cycle_days']}, error {row['days_error']:+.1f})"
+        )

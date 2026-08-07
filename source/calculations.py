@@ -217,8 +217,9 @@ def rank_efficiency(df_bags: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     paid = df_bags[df_bags["price"] > 0].copy()
     if paid.empty:
         return pd.DataFrame()
+    paid["coffee_label"] = paid["roaster"] + " - " + paid["coffee_name"]
     ranking = (
-        paid.groupby("coffee_name")
+        paid.groupby("coffee_label")
         .agg(
             cost_per_cup=("cost_per_cup_$", "mean"),
             total_cups=("total_cups", "sum"),
@@ -233,13 +234,15 @@ def rank_efficiency(df_bags: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
 def top_coffees(
     df_bags: pd.DataFrame, min_purchase: int = 2, top_n: int = 5
 ) -> pd.Series:
-    counts = df_bags["coffee_name"].value_counts()
+    combined = df_bags["roaster"] + " - " + df_bags["coffee_name"]
+    counts = combined.value_counts()
     return counts[counts >= min_purchase].head(top_n)
 
 
 def purchases_by_location(df_bags: pd.DataFrame) -> pd.Series:
+    real_locations = df_bags[~df_bags["location_name"].isin(["Anual"])]
     return (
-        df_bags.groupby("location_name")["coffee_name"]
+        real_locations.groupby("location_name")["coffee_name"]
         .count()
         .sort_values(ascending=False)
     )
@@ -250,8 +253,8 @@ def monthly_consumption(df_prep: pd.DataFrame) -> pd.DataFrame:
     df_prep["month_period"] = df_prep["prepared_timestamp"].dt.to_period("M")
     monthly = df_prep.groupby("month_period").agg(
         total_cups=("cups_prepared", "sum"),
-        active_days=("prepared_timestamp", lambda s: s.dt.date.nunique()),
     )
+    monthly["active_days"] = monthly.index.to_timestamp().days_in_month
     monthly["cups_per_day"] = monthly["total_cups"] / monthly["active_days"]
     return monthly
 
@@ -359,15 +362,19 @@ def seasonal_consumption(df_prep: pd.DataFrame, season_func) -> pd.DataFrame:
     return seasonal
 
 
-def maintenance_alerts(df_prep: pd.DataFrame, df_maintenance: pd.DataFrame) -> list:
-    alerts = []
+def maintenance_alerts(df_prep: pd.DataFrame, df_maintenance: pd.DataFrame) -> dict:
     cups_since_clean = cups_since_maintenance(df_prep, df_maintenance, "CLEAN")
     cups_since_descale = cups_since_maintenance(df_prep, df_maintenance, "DESCALE")
-    if cups_since_clean is not None and cups_since_clean >= 200:
-        alerts.append("CLEAN")
-    if cups_since_descale is not None and cups_since_descale >= 600:
-        alerts.append("DESCALE")
-    return alerts
+
+    remaining_to_clean = None if cups_since_clean is None else max(0, 200 - cups_since_clean)
+    remaining_to_descale = None if cups_since_descale is None else max(0, 600 - cups_since_descale)
+
+    return {
+        "needs_clean": cups_since_clean is not None and cups_since_clean >= 200,
+        "needs_descale": cups_since_descale is not None and cups_since_descale >= 600,
+        "remaining_to_clean": remaining_to_clean,
+        "remaining_to_descale": remaining_to_descale,
+    }
 
 
 def savings_vs_cafeteria(
@@ -435,7 +442,7 @@ def savings_vs_cafeteria(
 def last_five_bags_performance(
     df_bags: pd.DataFrame, cups_mae: float, duration_mae: float
 ) -> pd.DataFrame:
-    closed = df_bags[df_bags["status"] == "CLOSED"].copy()
+    closed = df_bags[(df_bags["status"] == "CLOSED") & (df_bags["roaster"] != "Anual")].copy()
     last_five = (
         closed.sort_values("closed_date", ascending=False)
         .head(5)
@@ -546,3 +553,13 @@ if __name__ == "__main__":
     monthly = monthly_consumption(df_prep)
     print("--- tendencia de consumo ---")
     print(consumption_trend(monthly))
+    
+def prediction_accuracy(df_bags: pd.DataFrame, df_predictions: pd.DataFrame) -> pd.DataFrame:
+    closed = df_bags[df_bags["status"] == "CLOSED"][["id", "coffee_name", "total_cups", "cycle_days"]]
+    merged = df_predictions.merge(closed, left_on="bag_id", right_on="id", how="inner")
+    merged["cups_error"] = merged["predicted_total_cups"] - merged["total_cups"]
+    merged["days_error"] = merged["predicted_cycle_days"] - merged["cycle_days"]
+    return merged[[
+        "coffee_name", "prediction_date", "predicted_total_cups", "total_cups", "cups_error",
+        "predicted_cycle_days", "cycle_days", "days_error", "cups_model", "duration_model",
+    ]]

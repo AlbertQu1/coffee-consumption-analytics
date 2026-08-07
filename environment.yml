@@ -5,7 +5,8 @@ dependencies:
   - python=3.13
   - scikit-learn
   - pandas
-  - gspread
+  - psycopg2
+  - sqlalchemy
   - python-dotenv
   - numpy-financial
-
+  - requests

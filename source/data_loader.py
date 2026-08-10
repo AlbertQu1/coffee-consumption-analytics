@@ -3,6 +3,7 @@ from sqlalchemy import create_engine, text
 import psycopg2
 import pandas as pd
 import requests
+import icalendar
 
 
 def get_connection(cfg: Config):
@@ -118,5 +119,25 @@ def insert_bag_prediction(conn, bag_id, predicted_total_cups, predicted_cycle_da
         )
         
 def fetch_bag_predictions(conn) -> pd.DataFrame:
-    sql = "SELECT bag_id, prediction_date, predicted_total_cups, predicted_cycle_days, cups_model, duration_model FROM bag_predictions"
+    sql = "SELECT id, bag_id, prediction_date, predicted_total_cups, predicted_cycle_days, cups_model, duration_model FROM bag_predictions"
     return pd.read_sql_query(sql, conn)
+
+def fetch_ical_events(url: str) -> pd.DataFrame:
+    if not url:
+        return pd.DataFrame(columns=["summary", "start_date", "end_date"])
+    response = requests.get(url)
+    cal = icalendar.Calendar.from_ical(response.text)
+    events = []
+    for component in cal.walk("VEVENT"):
+        start = pd.Timestamp(component.get("DTSTART").dt)
+        end = pd.Timestamp(component.get("DTEND").dt)
+        if start.tzinfo is not None:
+            start = start.tz_localize(None)
+        if end.tzinfo is not None:
+            end = end.tz_localize(None)
+        events.append({
+            "summary": str(component.get("SUMMARY")),
+            "start_date": start.normalize(),
+            "end_date": end.normalize(),
+        })
+    return pd.DataFrame(events)

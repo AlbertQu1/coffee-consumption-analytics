@@ -99,7 +99,12 @@ def print_monthly_seasonal(monthly, seasonal_traditional, seasonal_climate):
         print(f" • Lluvias vs. seca:         {top_climate} consume mas ({seasonal_climate.loc[top_climate, 'cups_per_day']:.2f} tz/dia)")
     print(" • Ultimos 6 meses:")
     for period, row in monthly.tail(6).iterrows():
-        print(f"   - {period}: {row['total_cups']:.0f} tazas")
+        marker = ""
+        if row.get("on_vacation"):
+            marker += " 🧳 vacaciones"
+        if row.get("had_visitors"):
+            marker += " 👥 visitas"
+        print(f"   - {period}: {row['total_cups']:.0f} tazas{marker}")
 
 def _correlation_strength(value: float) -> str:
     abs_value = abs(value)

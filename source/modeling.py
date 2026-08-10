@@ -186,6 +186,6 @@ def historical_rate_baseline_mae(df_bags: pd.DataFrame) -> Optional[float]:
             predict_days = closed.loc[i, "total_cups"] / rate
             real_days = closed.loc[i, "cycle_days"]
             errors.append(abs(predict_days - real_days))
-        if not errors:
-            return None
-        return float(np.mean(errors))
+    if not errors:
+        return None
+    return float(np.mean(errors))

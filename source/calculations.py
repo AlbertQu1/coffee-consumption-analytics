@@ -555,11 +555,33 @@ if __name__ == "__main__":
     print(consumption_trend(monthly))
     
 def prediction_accuracy(df_bags: pd.DataFrame, df_predictions: pd.DataFrame) -> pd.DataFrame:
-    closed = df_bags[df_bags["status"] == "CLOSED"][["id", "coffee_name", "total_cups", "cycle_days"]]
-    merged = df_predictions.merge(closed, left_on="bag_id", right_on="id", how="inner")
+    closed = df_bags[df_bags["status"] == "CLOSED"][["id", "coffee_name", "closed_date", "total_cups", "cycle_days"]]
+    last_five_closed = closed.sort_values("closed_date", ascending=False).head(5)
+
+    latest_predictions = (
+        df_predictions.sort_values("id")
+        .groupby("bag_id", as_index=False)
+        .last()
+    )
+
+    merged = latest_predictions.merge(last_five_closed, left_on="bag_id", right_on="id", how="inner")
     merged["cups_error"] = merged["predicted_total_cups"] - merged["total_cups"]
     merged["days_error"] = merged["predicted_cycle_days"] - merged["cycle_days"]
     return merged[[
         "coffee_name", "prediction_date", "predicted_total_cups", "total_cups", "cups_error",
         "predicted_cycle_days", "cycle_days", "days_error", "cups_model", "duration_model",
     ]]
+    
+def flag_atypical_months(monthly: pd.DataFrame, vacations: pd.DataFrame, visits: pd.DataFrame) -> pd.DataFrame:
+    monthly = monthly.copy()
+    month_starts = monthly.index.to_timestamp()
+    month_ends = month_starts + pd.offsets.MonthEnd(0)
+
+    def overlaps(events, m_start, m_end):
+        if events.empty:
+            return False
+        return ((events["start_date"] <= m_end) & (events["end_date"] >= m_start)).any()
+
+    monthly["on_vacation"] = [overlaps(vacations, s, e) for s, e in zip(month_starts, month_ends)]
+    monthly["had_visitors"] = [overlaps(visits, s, e) for s, e in zip(month_starts, month_ends)]
+    return monthly

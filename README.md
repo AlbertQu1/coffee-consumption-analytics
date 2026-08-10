@@ -90,15 +90,17 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 
 **Done:**
 - One-time migration of the full historical record (bags, preparations reconstructed from cup-size counts, waste, cafeteria benchmarks) from the legacy Google Sheet into a disposable, freely-resettable test database — verified end to end (cup totals match the source exactly)
-- Prediction logging: every pipeline run stores a snapshot of its prediction for the active bag, so realized accuracy can be measured once that bag actually closes
+- Prediction logging with a full feedback loop: every pipeline run stores a snapshot of its prediction for the active bag, and once a bag closes, a dedicated report section automatically compares the logged predictions against what actually happened
+- Home Assistant configured on the home server, with real environmental sensors (SwitchBot/Xiaomi) now reporting — not yet wired into the pipeline (see below)
+- Tailscale mesh VPN set up across phone, laptop, and home server, in preparation for restricted remote access
 
 **Still pending:**
+- Start persisting Home Assistant's sensor readings into Postgres now (rather than relying on Home Assistant's own 10-day default history retention), so there's a real historical baseline by the time city-level weather actually gets swapped for home climate data
 - Finish writing pipeline outputs to Postgres/Google Sheets for Power BI, Looker Studio, and Tableau Public consumption
 - Cutover to a dedicated production database, separate from the development/test database
-- Build the actual prediction-vs-reality comparison report (the data is being logged; the comparison view isn't wired into the report output yet)
 - Vacation/guest-visit tracking to explain consumption dips and spikes that aren't seasonal
-- Home Assistant sensor integration to replace city-level weather with actual home climate data
-- Remote access via Tailscale, with logging screens restricted to the home network (VPN configured on the home server so far, not yet on mobile)
+- Swap city-level weather for actual home climate data once enough sensor history has accumulated
+- Remote access restriction logic (Next.js middleware blocking the cup-logging screens when accessed via the Tailscale IP range, away from home)
 
 ---
 

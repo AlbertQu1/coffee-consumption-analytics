@@ -23,6 +23,8 @@ class Config:
     purchase_date: str = "30/05/2025"
     latitude: float = 19.4326
     longitude: float = -99.1332
+    vacation_calendar_url: str = ""
+    visits_calendar_url: str = ""
     
     
 def load_config() -> Config:
@@ -32,5 +34,7 @@ def load_config() -> Config:
         pgdatabase=_get_required("PGDATABASE"),
         pguser=_get_required("PGUSER"),
         pgpassword=_get_required("PGPASSWORD"),
-        banxico_token=_get_required("BANXICO_TOKEN")
+        banxico_token=_get_required("BANXICO_TOKEN"),
+        vacation_calendar_url=os.environ.get("VACATION_CALENDAR_URL", ""),
+        visits_calendar_url=os.environ.get("VISITS_CALENDAR_URL", ""),
     )

@@ -4,7 +4,7 @@ from config import load_config
 from data_loader import (
     get_connection, fetch_bags, fetch_preparation, fetch_maintenance, fetch_waste,
     fetch_benchmark, fetch_weather_data, fetch_cetes_rate, insert_bag_prediction,
-    fetch_bag_predictions,
+    fetch_bag_predictions, fetch_ical_events
 )
 from cleaning import clean_bags, clean_preparations, bags_with_preparations
 from calculations import (
@@ -15,7 +15,7 @@ from calculations import (
     savings_vs_cafeteria, calculate_npv_irr, cup_size_breakdown, top_coffees,
     rank_efficiency, forecast_next_month, forecast_active_bag_completion,
     maintenance_alerts, purchases_by_location, weather_consumption_correlation,
-    consumption_trend, prediction_accuracy,
+    consumption_trend, prediction_accuracy, flag_atypical_months,
 )
 from modeling import train_best_model, predict_rows, historical_rate_baseline_mae
 from report import (
@@ -70,7 +70,8 @@ def main():
     active_inventory = estimate_active_inventory(df_clean)
     total_cups = df_clean["total_cups"].sum()
     total_grams = df_clean["consumed_grams"].sum()
-    print_executive_summary(df_clean, spending, active_inventory, total_cups, total_grams)
+    bags_for_count = df_clean[df_clean["roaster"] != "Anual"]
+    print_executive_summary(bags_for_count, spending, active_inventory, total_cups, total_grams)
 
     # 7. Mantenimiento
     print_maintenance(maintenance_alerts(df_prep, df_maintenance))
@@ -100,6 +101,9 @@ def main():
         )
 
     monthly = monthly_consumption(df_prep)
+    df_vacations = fetch_ical_events(cfg.vacation_calendar_url)
+    df_visits = fetch_ical_events(cfg.visits_calendar_url)
+    monthly = flag_atypical_months(monthly, df_vacations, df_visits)
     forecast = forecast_next_month(monthly)
     active_forecast = forecast_active_bag_completion(active_bag_eta, forecast)
     print_bag_status(active_bag_eta, active_forecast)
@@ -119,7 +123,7 @@ def main():
 
     # 3. Confiabilidad del modelo
     ritmo_mae = historical_rate_baseline_mae(df_clean)
-    n_closed = len(df_clean[df_clean["status"] == "CLOSED"])
+    n_closed = len(df_clean[(df_clean["status"] == "CLOSED") & (df_clean["roaster"] != "Anual")])
     print_ml_results(cups_result, duration_result, ritmo_mae, n_closed)
     last_five = last_five_bags_performance(df_predicted, cups_result[2], duration_result[2])
     print_last_five_performance(last_five)

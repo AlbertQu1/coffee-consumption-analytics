@@ -4,7 +4,7 @@ from config import load_config
 from data_loader import (
     get_connection, fetch_bags, fetch_preparation, fetch_maintenance, fetch_waste,
     fetch_benchmark, fetch_weather_data, fetch_cetes_rate, insert_bag_prediction,
-    fetch_bag_predictions, fetch_ical_events
+    fetch_bag_predictions, fetch_ical_events, fetch_vacation_trips
 )
 from cleaning import clean_bags, clean_preparations, bags_with_preparations
 from calculations import (
@@ -101,7 +101,7 @@ def main():
         )
 
     monthly = monthly_consumption(df_prep)
-    df_vacations = fetch_ical_events(cfg.vacation_calendar_url)
+    df_vacations = fetch_vacation_trips(cfg)
     df_visits = fetch_ical_events(cfg.visits_calendar_url)
     monthly = flag_atypical_months(monthly, df_vacations, df_visits)
     forecast = forecast_next_month(monthly)

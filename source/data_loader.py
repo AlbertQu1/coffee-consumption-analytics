@@ -11,6 +11,12 @@ def get_connection(cfg: Config):
     return create_engine(url)
 
 
+def get_vacation_connection(cfg: Config):
+    # Vacaciones app lives in its own database on the same Postgres cluster.
+    url = f"postgresql+psycopg2://{cfg.pguser}:{cfg.pgpassword}@{cfg.pghost}:{cfg.pgport}/{cfg.vacation_database}"
+    return create_engine(url)
+
+
 def fetch_bags(conn) -> pd.DataFrame:
     sql = """
         SELECT 
@@ -121,6 +127,20 @@ def insert_bag_prediction(conn, bag_id, predicted_total_cups, predicted_cycle_da
 def fetch_bag_predictions(conn) -> pd.DataFrame:
     sql = "SELECT id, bag_id, prediction_date, predicted_total_cups, predicted_cycle_days, cups_model, duration_model FROM bag_predictions"
     return pd.read_sql_query(sql, conn)
+
+def fetch_vacation_trips(cfg: Config) -> pd.DataFrame:
+    """Vacation data now comes from the Vacaciones app's own database (vacation_trips
+    table) instead of an iCal feed. Returns the same shape fetch_ical_events used to
+    (summary/start_date/end_date) so flag_atypical_months stays untouched."""
+    conn = get_vacation_connection(cfg)
+    df = pd.read_sql_query(
+        "SELECT destination AS summary, departure_date AS start_date, return_date AS end_date FROM vacation_trips",
+        conn,
+    )
+    df["start_date"] = pd.to_datetime(df["start_date"])
+    df["end_date"] = pd.to_datetime(df["end_date"])
+    return df
+
 
 def fetch_ical_events(url: str) -> pd.DataFrame:
     if not url:

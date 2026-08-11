@@ -93,12 +93,12 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 - Prediction logging with a full feedback loop: every pipeline run stores a snapshot of its prediction for the active bag, and once a bag closes, a dedicated report section automatically compares the logged predictions against what actually happened
 - Home Assistant configured on the home server, with real environmental sensors (SwitchBot/Xiaomi) now reporting — not yet wired into the pipeline (see below)
 - Tailscale mesh VPN set up across phone, laptop, and home server, in preparation for restricted remote access
+- Vacation tracking now reads from the [Vacaciones](https://github.com/AlbertQu1/Vacaciones) app's own database (`vacation_trips`) instead of an iCal feed — `data_loader.fetch_vacation_trips()` returns the same shape `fetch_ical_events()` used to, so `flag_atypical_months()` didn't need to change. Guest-visit tracking still uses the iCal feed (`visits_calendar_url`) — no dedicated app for that yet.
 
 **Still pending:**
 - Start persisting Home Assistant's sensor readings into Postgres now (rather than relying on Home Assistant's own 10-day default history retention), so there's a real historical baseline by the time city-level weather actually gets swapped for home climate data
 - Finish writing pipeline outputs to Postgres/Google Sheets for Power BI, Looker Studio, and Tableau Public consumption
 - Cutover to a dedicated production database, separate from the development/test database
-- Vacation/guest-visit tracking to explain consumption dips and spikes that aren't seasonal
 - Swap city-level weather for actual home climate data once enough sensor history has accumulated
 - Remote access restriction logic (Next.js middleware blocking the cup-logging screens when accessed via the Tailscale IP range, away from home)
 

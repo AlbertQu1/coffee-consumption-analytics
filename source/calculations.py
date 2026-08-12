@@ -205,6 +205,25 @@ def add_vacation_days_metric(df_bags: pd.DataFrame, df_vacations: pd.DataFrame) 
     df_bags["vacation_days_in_cycle"] = df_bags.apply(vacation_days_during_cycle, axis=1)
     return df_bags
 
+def add_visit_days_metric(df_bags: pd.DataFrame, df_visits: pd.DataFrame) -> pd.DataFrame:
+    df_bags = df_bags.copy()
+
+    def visit_days_during_cycle(row):
+        if pd.isna(row["opened_date"]) or df_visits.empty:
+            return 0
+        end_date = (
+            row["closed_date"]
+            if pd.notna(row["closed_date"])
+            else pd.Timestamp(datetime.now().date())
+        )
+        overlap_start = df_visits["start_date"].clip(lower=row["opened_date"])
+        overlap_end = df_visits["end_date"].clip(upper=end_date)
+        overlap_days = (overlap_end - overlap_start).dt.days + 1
+        return overlap_days.clip(lower=0).sum()
+
+    df_bags["visit_days_in_cycle"] = df_bags.apply(visit_days_during_cycle, axis=1)
+    return df_bags
+
 def add_bag_eta(df_bags: pd.DataFrame, ml_days_col: str) -> pd.DataFrame:
     df_bags = df_bags.copy()
     df_bags["remaining_grams"] = np.maximum(

@@ -2,29 +2,68 @@ import sys
 import pandas as pd
 from config import load_config
 from data_loader import (
-    get_connection, fetch_bags, fetch_preparation, fetch_maintenance, fetch_waste,
-    fetch_benchmark, fetch_weather_data, fetch_cetes_rate, insert_bag_prediction,
-    fetch_bag_predictions, fetch_ical_events, fetch_vacation_trips
+    get_connection,
+    fetch_bags,
+    fetch_preparation,
+    fetch_maintenance,
+    fetch_waste,
+    fetch_benchmark,
+    fetch_weather_data,
+    fetch_cetes_rate,
+    insert_bag_prediction,
+    fetch_bag_predictions,
+    fetch_ical_events,
+    fetch_vacation_trips,
 )
 from cleaning import clean_bags, clean_preparations, bags_with_preparations
 from calculations import (
-    add_season_columns, add_cycle_days, add_closed_day_info, add_cost_metrics,
-    add_weather_metrics, find_invalid_date_bags, spending_summary,
-    estimate_active_inventory, add_bag_eta, last_five_bags_performance,
-    monthly_consumption, seasonal_consumption, season_name, climate_season,
-    savings_vs_cafeteria, calculate_npv_irr, cup_size_breakdown, top_coffees,
-    rank_efficiency, forecast_next_month, forecast_active_bag_completion,
-    maintenance_alerts, purchases_by_location, weather_consumption_correlation,
-    consumption_trend, prediction_accuracy, flag_atypical_months, add_vacation_days_metric,
+    add_season_columns,
+    add_cycle_days,
+    add_closed_day_info,
+    add_cost_metrics,
+    add_weather_metrics,
+    find_invalid_date_bags,
+    spending_summary,
+    estimate_active_inventory,
+    add_bag_eta,
+    last_five_bags_performance,
+    monthly_consumption,
+    seasonal_consumption,
+    season_name,
+    climate_season,
+    savings_vs_cafeteria,
+    calculate_npv_irr,
+    cup_size_breakdown,
+    top_coffees,
+    rank_efficiency,
+    forecast_next_month,
+    forecast_active_bag_completion,
+    maintenance_alerts,
+    purchases_by_location,
+    weather_consumption_correlation,
+    consumption_trend,
+    prediction_accuracy,
+    flag_atypical_months,
+    add_vacation_days_metric,
     add_visit_days_metric,
+    add_recent_cup_size_metric,
 )
 from modeling import train_best_model, predict_rows, historical_rate_baseline_mae
 from report import (
-    print_invalid_dates_warning, print_executive_summary, print_maintenance,
-    print_bag_status, print_monthly_seasonal, print_weather_and_trend,
-    print_roi_van_tir, print_ml_results, print_last_five_performance,
-    print_top_coffees, print_efficiency_ranking, print_cup_breakdown,
-    print_purchase_locations, print_prediction_accuracy,
+    print_invalid_dates_warning,
+    print_executive_summary,
+    print_maintenance,
+    print_bag_status,
+    print_monthly_seasonal,
+    print_weather_and_trend,
+    print_roi_van_tir,
+    print_ml_results,
+    print_last_five_performance,
+    print_top_coffees,
+    print_efficiency_ranking,
+    print_cup_breakdown,
+    print_purchase_locations,
+    print_prediction_accuracy,
 )
 
 
@@ -56,13 +95,16 @@ def main():
     df_clean = add_cost_metrics(df_clean)
 
     fecha_inicio = df_clean["opened_date"].min().strftime("%Y-%m-%d")
-    fecha_fin = min(df_clean["closed_date"].max(), pd.Timestamp.today()).strftime("%Y-%m-%d")
+    fecha_fin = min(df_clean["closed_date"].max(), pd.Timestamp.today()).strftime(
+        "%Y-%m-%d"
+    )
     df_clima = fetch_weather_data(cfg.latitude, cfg.longitude, fecha_inicio, fecha_fin)
     df_clean = add_weather_metrics(df_clean, df_clima)
     df_vacations = fetch_vacation_trips(cfg)
     df_clean = add_vacation_days_metric(df_clean, df_vacations)
     df_visits = fetch_ical_events(cfg.visits_calendar_url)
     df_clean = add_visit_days_metric(df_clean, df_visits)
+    df_clean = add_recent_cup_size_metric(df_clean, df_prep)
 
     invalid_bags = find_invalid_date_bags(df_clean)
     if not invalid_bags.empty:
@@ -76,21 +118,38 @@ def main():
     total_cups = df_clean["total_cups"].sum()
     total_grams = df_clean["consumed_grams"].sum()
     bags_for_count = df_clean[df_clean["roaster"] != "Anual"]
-    print_executive_summary(bags_for_count, spending, active_inventory, total_cups, total_grams)
+    print_executive_summary(
+        bags_for_count, spending, active_inventory, total_cups, total_grams
+    )
 
     # 7. Mantenimiento
     print_maintenance(maintenance_alerts(df_prep, df_maintenance))
 
     # 2. Tu bolsa de ahora
-    features = ["weight_grams", "opening_month", "avg_precipitation", "avg_temp", "vacation_days_in_cycle", "visit_days_in_cycle"]
+    features = [
+        "weight_grams",
+        "opening_month",
+        "avg_precipitation",
+        "avg_temp",
+        "vacation_days_in_cycle",
+        "visit_days_in_cycle",
+    ]
     cups_result = train_best_model(df_clean, "total_cups", features)
     duration_result = train_best_model(df_clean, "cycle_days", features)
     cups_model, cups_features = cups_result[0], cups_result[1]
     duration_model, duration_features = duration_result[0], duration_result[1]
 
     df_to_predict = df_clean[df_clean["opened_date"].notna()].copy()
-    df_predicted = predict_rows(cups_model, cups_features, df_to_predict, "predicted_total_cups", features)
-    df_predicted = predict_rows(duration_model, duration_features, df_predicted, "predicted_cycle_days", features)
+    df_predicted = predict_rows(
+        cups_model, cups_features, df_to_predict, "predicted_total_cups", features
+    )
+    df_predicted = predict_rows(
+        duration_model,
+        duration_features,
+        df_predicted,
+        "predicted_cycle_days",
+        features,
+    )
 
     active_bag = df_predicted[df_predicted["status"] == "ACTIVE"]
     active_bag_eta = add_bag_eta(active_bag, "predicted_cycle_days")
@@ -117,19 +176,30 @@ def main():
     seasonal_climate = seasonal_consumption(df_prep, climate_season)
     print_monthly_seasonal(monthly, seasonal, seasonal_climate)
     print_cup_breakdown(cup_size_breakdown(df_prep))
-    print_weather_and_trend(weather_consumption_correlation(df_clean), consumption_trend(monthly))
+    print_weather_and_trend(
+        weather_consumption_correlation(df_clean), consumption_trend(monthly)
+    )
 
     # 6. El dinero
     savings = savings_vs_cafeteria(df_prep, df_clean, df_benchmark, cfg)
     tasa = fetch_cetes_rate(cfg.banxico_token)
-    van_tir = calculate_npv_irr(cfg.machine_cost, savings["monthly_savings"], int(savings["months_since_purchase"]), tasa)
+    van_tir = calculate_npv_irr(
+        cfg.machine_cost,
+        savings["monthly_savings"],
+        int(savings["months_since_purchase"]),
+        tasa,
+    )
     print_roi_van_tir(savings, van_tir)
 
     # 3. Confiabilidad del modelo
     ritmo_mae = historical_rate_baseline_mae(df_clean)
-    n_closed = len(df_clean[(df_clean["status"] == "CLOSED") & (df_clean["roaster"] != "Anual")])
+    n_closed = len(
+        df_clean[(df_clean["status"] == "CLOSED") & (df_clean["roaster"] != "Anual")]
+    )
     print_ml_results(cups_result, duration_result, ritmo_mae, n_closed)
-    last_five = last_five_bags_performance(df_predicted, cups_result[2], duration_result[2])
+    last_five = last_five_bags_performance(
+        df_predicted, cups_result[2], duration_result[2]
+    )
     print_last_five_performance(last_five)
     df_predictions = fetch_bag_predictions(conn)
     accuracy = prediction_accuracy(df_clean, df_predictions)
@@ -143,4 +213,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

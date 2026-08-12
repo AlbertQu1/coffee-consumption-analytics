@@ -628,3 +628,23 @@ def flag_atypical_months(monthly: pd.DataFrame, vacations: pd.DataFrame, visits:
     monthly["on_vacation"] = [overlaps(vacations, s, e) for s, e in zip(month_starts, month_ends)]
     monthly["had_visitors"] = [overlaps(visits, s, e) for s, e in zip(month_starts, month_ends)]
     return monthly
+
+def add_recent_cup_size_metric(
+    df_bags: pd.DataFrame, df_prep: pd.DataFrame, window_days: int = 30
+) -> pd.DataFrame:
+    df_bags = df_bags.copy()
+    prep_timestamps = df_prep["prepared_timestamp"].dt.tz_localize(None)
+    global_avg = (df_prep["cup_grams"] * df_prep["cups_prepared"]).sum() / df_prep["cups_prepared"].sum()
+
+    def recent_cup_size(row):
+        if pd.isna(row["opened_date"]):
+            return global_avg
+        window_start = row["opened_date"] - pd.Timedelta(days=window_days)
+        mask = (prep_timestamps >= window_start) & (prep_timestamps < row["opened_date"])
+        subset = df_prep[mask]
+        if subset.empty or subset["cups_prepared"].sum() == 0:
+            return global_avg
+        return (subset["cup_grams"] * subset["cups_prepared"]).sum() / subset["cups_prepared"].sum()
+
+    df_bags["recent_avg_cup_grams"] = df_bags.apply(recent_cup_size, axis=1)
+    return df_bags

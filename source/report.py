@@ -258,8 +258,9 @@ def print_efficiency_ranking(ranking):
         print(" • Sin bolsas pagadas registradas.")
         return
     for coffee, row in ranking.iterrows():
-        cost_str = f"{money(row['cost_per_cup'])}/taza"
-        print(f" • {coffee:<30}{cost_str:<18}|  {int(row['total_cups']):>3} tazas  |  {int(row['purchases'])} compra(s)")
+            cost_str = f"{money(row['cost_per_cup'])}/taza"
+            merma_str = f"{row['waste_pct']:.1f}% merma"
+            print(f" • {coffee:<30}{cost_str:<18}|  {int(row['total_cups']):>3} tazas  |  {int(row['purchases'])} compra(s)  |  {merma_str}")
 
 
 def print_cup_breakdown(breakdown):

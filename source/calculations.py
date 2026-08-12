@@ -255,12 +255,18 @@ def rank_efficiency(df_bags: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     if paid.empty:
         return pd.DataFrame()
     paid["coffee_label"] = paid["roaster"] + " - " + paid["coffee_name"]
+    paid["waste_pct"] = np.where(
+        paid["weight_grams"] > 0,
+        np.maximum(0, paid["weight_grams"] - paid["consumed_grams"]) / paid["weight_grams"] * 100,
+        0,
+    )
     ranking = (
         paid.groupby("coffee_label")
         .agg(
             cost_per_cup=("cost_per_cup_$", "mean"),
             total_cups=("total_cups", "sum"),
             purchases=("price", "count"),
+            waste_pct=("waste_pct", "mean"),
         )
         .sort_values("cost_per_cup")
         .head(top_n)

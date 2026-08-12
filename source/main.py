@@ -15,7 +15,7 @@ from calculations import (
     savings_vs_cafeteria, calculate_npv_irr, cup_size_breakdown, top_coffees,
     rank_efficiency, forecast_next_month, forecast_active_bag_completion,
     maintenance_alerts, purchases_by_location, weather_consumption_correlation,
-    consumption_trend, prediction_accuracy, flag_atypical_months,
+    consumption_trend, prediction_accuracy, flag_atypical_months, add_vacation_days_metric,
 )
 from modeling import train_best_model, predict_rows, historical_rate_baseline_mae
 from report import (
@@ -58,6 +58,8 @@ def main():
     fecha_fin = min(df_clean["closed_date"].max(), pd.Timestamp.today()).strftime("%Y-%m-%d")
     df_clima = fetch_weather_data(cfg.latitude, cfg.longitude, fecha_inicio, fecha_fin)
     df_clean = add_weather_metrics(df_clean, df_clima)
+    df_vacations = fetch_vacation_trips(cfg)
+    df_clean = add_vacation_days_metric(df_clean, df_vacations)
 
     invalid_bags = find_invalid_date_bags(df_clean)
     if not invalid_bags.empty:
@@ -77,7 +79,7 @@ def main():
     print_maintenance(maintenance_alerts(df_prep, df_maintenance))
 
     # 2. Tu bolsa de ahora
-    features = ["weight_grams", "opening_month", "avg_precipitation", "avg_temp"]
+    features = ["weight_grams", "opening_month", "avg_precipitation", "avg_temp", "vacation_days_in_cycle"]
     cups_result = train_best_model(df_clean, "total_cups", features)
     duration_result = train_best_model(df_clean, "cycle_days", features)
     cups_model, cups_features = cups_result[0], cups_result[1]

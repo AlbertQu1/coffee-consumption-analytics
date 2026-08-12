@@ -186,6 +186,24 @@ def add_weather_metrics(
     df_bags = pd.concat([df_bags, weather_cols], axis=1)
     return df_bags
 
+def add_vacation_days_metric(df_bags: pd.DataFrame, df_vacations: pd.DataFrame) -> pd.DataFrame:
+    df_bags = df_bags.copy()
+
+    def vacation_days_during_cycle(row):
+        if pd.isna(row["opened_date"]) or df_vacations.empty:
+            return 0
+        end_date = (
+            row["closed_date"]
+            if pd.notna(row["closed_date"])
+            else pd.Timestamp(datetime.now().date())
+        )
+        overlap_start = df_vacations["start_date"].clip(lower=row["opened_date"])
+        overlap_end = df_vacations["end_date"].clip(upper=end_date)
+        overlap_days = (overlap_end - overlap_start).dt.days + 1
+        return overlap_days.clip(lower=0).sum()
+
+    df_bags["vacation_days_in_cycle"] = df_bags.apply(vacation_days_during_cycle, axis=1)
+    return df_bags
 
 def add_bag_eta(df_bags: pd.DataFrame, ml_days_col: str) -> pd.DataFrame:
     df_bags = df_bags.copy()

@@ -164,8 +164,7 @@ def main():
             duration_result[3],
         )
 
-    monthly = monthly_consumption(df_prep)
-    df_vacations = fetch_vacation_trips(cfg)
+    monthly = monthly_consumption(df_prep, df_vacations)
     monthly = flag_atypical_months(monthly, df_vacations, df_visits)
     forecast = forecast_next_month(monthly)
     active_forecast = forecast_active_bag_completion(active_bag_eta, forecast)

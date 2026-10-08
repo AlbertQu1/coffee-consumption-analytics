@@ -47,6 +47,7 @@ from calculations import (
     add_vacation_days_metric,
     add_visit_days_metric,
     add_recent_cup_size_metric,
+    add_cycle_avg_cup_grams_metric,
 )
 from modeling import train_best_model, predict_rows, historical_rate_baseline_mae
 from report import (
@@ -65,6 +66,7 @@ from report import (
     print_purchase_locations,
     print_prediction_accuracy,
 )
+from params import CUP_FEATURES, DURATION_FEATURES
 
 
 def connect_or_exit():
@@ -105,7 +107,8 @@ def main():
     df_visits = fetch_ical_events(cfg.visits_calendar_url)
     df_clean = add_visit_days_metric(df_clean, df_visits)
     df_clean = add_recent_cup_size_metric(df_clean, df_prep)
-
+    df_clean = add_cycle_avg_cup_grams_metric(df_clean, df_prep)
+    
     invalid_bags = find_invalid_date_bags(df_clean)
     if not invalid_bags.empty:
         print_invalid_dates_warning(invalid_bags)
@@ -126,29 +129,21 @@ def main():
     print_maintenance(maintenance_alerts(df_prep, df_maintenance))
 
     # 2. Tu bolsa de ahora
-    features = [
-        "weight_grams",
-        "opening_month",
-        "avg_precipitation",
-        "avg_temp",
-        "vacation_days_in_cycle",
-        "visit_days_in_cycle",
-    ]
-    cups_result = train_best_model(df_clean, "total_cups", features)
-    duration_result = train_best_model(df_clean, "cycle_days", features)
+    cups_result = train_best_model(df_clean, "total_cups", CUP_FEATURES)
+    duration_result = train_best_model(df_clean, "cycle_days", DURATION_FEATURES)
     cups_model, cups_features = cups_result[0], cups_result[1]
     duration_model, duration_features = duration_result[0], duration_result[1]
 
     df_to_predict = df_clean[df_clean["opened_date"].notna()].copy()
     df_predicted = predict_rows(
-        cups_model, cups_features, df_to_predict, "predicted_total_cups", features
+        cups_model, cups_features, df_to_predict, "predicted_total_cups", CUP_FEATURES
     )
     df_predicted = predict_rows(
         duration_model,
         duration_features,
         df_predicted,
         "predicted_cycle_days",
-        features,
+        DURATION_FEATURES,
     )
 
     active_bag = df_predicted[df_predicted["status"] == "ACTIVE"]

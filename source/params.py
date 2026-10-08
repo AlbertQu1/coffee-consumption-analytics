@@ -1,11 +1,13 @@
-MODEL_VERSION = "auto_v1"
+MODEL_VERSION = "auto_v2"
 CUP_FEATURES = [
-    "weight_grams", "opening_month", "vacation_days_in_cycle", 
-    "visit_days_in_cycle", "recent_avg_cup_grams"
+    "weight_grams", "opening_month", "avg_temp", "avg_precipitation",
+    "vacation_days_in_cycle", "visit_days_in_cycle", "recent_avg_cup_grams",
+    "cycle_avg_cup_grams"
     ]
 DURATION_FEATURES = [
-    "weight_grams", "opening_month", "vacation_days_in_cycle", 
-    "visit_days_in_cycle", "recent_avg_cup_grams"
+    "weight_grams", "opening_month", "avg_temp", "avg_precipitation",
+    "vacation_days_in_cycle", "visit_days_in_cycle", "recent_avg_cup_grams",
+    "cycle_avg_cup_grams"
     ]
 
 POST_CLOSURE_VARIABLES : frozenset[str] = frozenset({

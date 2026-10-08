@@ -34,7 +34,7 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 | Module | Responsibility |
 |---|---|
 | `config.py` | Typed, frozen config loaded from environment variables; secrets never printed |
-| `data_loader.py` | Pure data fetching — Postgres tables + external APIs, no business logic |
+| `data_loader.py` | Pure data fetching — Postgres tables (the app's database from `PGDATABASE`, plus `casa.vacaciones.vacation_trips`) + external APIs, no business logic |
 | `cleaning.py` | Per-source normalization (data-quality fixes, merges across tables at the correct grain) |
 | `params.py` | ML constants: feature lists, data-leakage guardrails, coefficient threshold |
 | `calculations.py` | All derived business metrics — cost/cup, cycle length, seasonal patterns, ROI, waste, forecasting |
@@ -63,7 +63,13 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 - Leave-one-out cross-validation for unbiased evaluation on a small dataset (bag-level grain, not per-cup)
 - Automatic model selection across Lasso, Ridge, ElasticNet, and KNN — winner chosen by MAE, re-evaluated with and without a coffee-identity feature
 - Rare coffee varieties (bought fewer than 3 times) are grouped into a generic category before one-hot encoding, preventing the model from "memorizing" one-off purchases instead of learning a real pattern
-- Explicit data-leakage guardrail: any variable only knowable after a bag closes is excluded from training by design
+- Feature set (`MODEL_VERSION = "auto_v2"`): both targets (`total_cups`, `cycle_days`) train on the same eight inputs, defined once in `params.py` as `CUP_FEATURES` / `DURATION_FEATURES` and imported by `main.py` (which previously kept its own inline list, so features added only to `params.py` never reached the model):
+  - `weight_grams`, `opening_month`
+  - `avg_temp`, `avg_precipitation` — weather averaged over the bag's cycle
+  - `vacation_days_in_cycle`, `visit_days_in_cycle`
+  - `recent_avg_cup_grams` — average grams per cup over the 30 days before the bag was opened (`calculations.add_recent_cup_size_metric()`)
+  - `cycle_avg_cup_grams` — average grams per cup actually brewed from that bag (`calculations.add_cycle_avg_cup_grams_metric()`), capturing that a bag drunk almost entirely as espresso lasts longer than one used for large cups at the same weight; falls back to the global average for a bag with no logged cups
+- Data-leakage guardrail: variables only knowable after a bag closes (`POST_CLOSURE_VARIABLES` in `params.py`: `cycle_days`, `total_cups`, `consumed_grams`, `cups_per_day`, `grams_per_day`) are kept out of the feature lists by convention — the set is documentation, it is not enforced in code. **Known exception:** `cycle_avg_cup_grams` is computed from the full cycle for closed bags (it equals `consumed_grams / total_cups`) but only from the cups logged so far for the active bag, so the leave-one-out MAE for `auto_v2` is optimistic compared with what a live prediction can achieve
 - Benchmark comparison: ML model vs. a naive historical-rate baseline, to justify (or reject) the added complexity
 - Confidence levels calibrated to sample size
 
@@ -93,7 +99,7 @@ How do you measure the actual ROI of a home espresso machine vs. buying coffee a
 - Prediction logging with a full feedback loop: every pipeline run stores a snapshot of its prediction for the active bag, and once a bag closes, a dedicated report section automatically compares the logged predictions against what actually happened
 - Home Assistant configured on the home server, with real environmental sensors (SwitchBot/Xiaomi) now reporting — not yet wired into the pipeline (see below)
 - Tailscale mesh VPN set up across phone, laptop, and home server, in preparation for restricted remote access
-- Vacation tracking now reads from the [Vacaciones](https://github.com/AlbertQu1/Vacaciones) app's own database (`vacation_trips`) instead of an iCal feed — `data_loader.fetch_vacation_trips()` returns the same shape `fetch_ical_events()` used to, so `flag_atypical_months()` didn't need to change. Guest-visit tracking still uses the iCal feed (`visits_calendar_url`) — no dedicated app for that yet.
+- Vacation tracking reads from the [Vacaciones](https://github.com/AlbertQu1/Vacaciones) app's data, which now lives in the `vacaciones` schema inside the shared `casa` Postgres database (migrated from a standalone `vacaciones` database that no longer exists) — `data_loader.fetch_vacation_trips()` returns the same shape `fetch_ical_events()` used to, so `flag_atypical_months()` didn't need to change. **Fixed 2026-08-17:** the connection config still pointed at the old, dropped standalone database, so this was silently returning zero vacation days for every calculation until corrected. Guest-visit tracking still uses the iCal feed (`visits_calendar_url`) — no dedicated app for that yet.
 
 **Still pending:**
 - Start persisting Home Assistant's sensor readings into Postgres now (rather than relying on Home Assistant's own 10-day default history retention), so there's a real historical baseline by the time city-level weather actually gets swapped for home climate data

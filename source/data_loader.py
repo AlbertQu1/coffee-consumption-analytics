@@ -12,8 +12,8 @@ def get_connection(cfg: Config):
 
 
 def get_vacation_connection(cfg: Config):
-    # Vacaciones app lives in its own database on the same Postgres cluster.
-    url = f"postgresql+psycopg2://{cfg.pguser}:{cfg.pgpassword}@{cfg.pghost}:{cfg.pgport}/{cfg.vacation_database}"
+    # Vacaciones app vive como el schema "vacaciones" dentro de la base "casa".
+    url = f"postgresql+psycopg2://{cfg.pguser}:{cfg.pgpassword}@{cfg.pghost}:{cfg.pgport}/casa"
     return create_engine(url)
 
 
@@ -134,7 +134,7 @@ def fetch_vacation_trips(cfg: Config) -> pd.DataFrame:
     (summary/start_date/end_date) so flag_atypical_months stays untouched."""
     conn = get_vacation_connection(cfg)
     df = pd.read_sql_query(
-        "SELECT destination AS summary, departure_date AS start_date, return_date AS end_date FROM vacation_trips",
+        "SELECT destination AS summary, departure_date AS start_date, return_date AS end_date FROM vacaciones.vacation_trips",
         conn,
     )
     df["start_date"] = pd.to_datetime(df["start_date"])

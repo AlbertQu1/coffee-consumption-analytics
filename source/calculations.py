@@ -648,3 +648,20 @@ def add_recent_cup_size_metric(
 
     df_bags["recent_avg_cup_grams"] = df_bags.apply(recent_cup_size, axis=1)
     return df_bags
+
+def add_cycle_avg_cup_grams_metric(df_bags: pd.DataFrame, df_prep: pd.DataFrame) -> pd.DataFrame:
+    """Promedio real de gramos/taza DENTRO del ciclo de cada bolsa (no en una
+    ventana previa a abrirla) -- captura que una bolsa consumida casi puro
+    Espresso dura mas que una con mezcla de tazas grandes, aunque el peso
+    total sea el mismo."""
+    df_bags = df_bags.copy()
+    global_avg = (df_prep["cup_grams"] * df_prep["cups_prepared"]).sum() / df_prep["cups_prepared"].sum()
+
+    def cycle_cup_size(row):
+        subset = df_prep[df_prep["bag_id"] == row["id"]]
+        if subset.empty or subset["cups_prepared"].sum() == 0:
+            return global_avg
+        return (subset["cup_grams"] * subset["cups_prepared"]).sum() / subset["cups_prepared"].sum()
+
+    df_bags["cycle_avg_cup_grams"] = df_bags.apply(cycle_cup_size, axis=1)
+    return df_bags

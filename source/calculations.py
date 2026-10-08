@@ -186,21 +186,30 @@ def add_weather_metrics(
     df_bags = pd.concat([df_bags, weather_cols], axis=1)
     return df_bags
 
+def vacation_days_in_range(start_date, end_date, df_vacations: pd.DataFrame) -> int:
+    """Cuenta cuantos dias de [start_date, end_date] (inclusive) caen dentro de algun
+    viaje de df_vacations (columnas start_date/end_date). Usado para ajustar tasas de
+    consumo (cups_per_day, etc.) restando dias en los que no habia nadie en casa."""
+    if pd.isna(start_date) or pd.isna(end_date) or df_vacations.empty:
+        return 0
+    overlap_start = df_vacations["start_date"].clip(lower=start_date)
+    overlap_end = df_vacations["end_date"].clip(upper=end_date)
+    overlap_days = (overlap_end - overlap_start).dt.days + 1
+    return int(overlap_days.clip(lower=0).sum())
+
+
 def add_vacation_days_metric(df_bags: pd.DataFrame, df_vacations: pd.DataFrame) -> pd.DataFrame:
     df_bags = df_bags.copy()
 
     def vacation_days_during_cycle(row):
-        if pd.isna(row["opened_date"]) or df_vacations.empty:
+        if pd.isna(row["opened_date"]):
             return 0
         end_date = (
             row["closed_date"]
             if pd.notna(row["closed_date"])
             else pd.Timestamp(datetime.now().date())
         )
-        overlap_start = df_vacations["start_date"].clip(lower=row["opened_date"])
-        overlap_end = df_vacations["end_date"].clip(upper=end_date)
-        overlap_days = (overlap_end - overlap_start).dt.days + 1
-        return overlap_days.clip(lower=0).sum()
+        return vacation_days_in_range(row["opened_date"], end_date, df_vacations)
 
     df_bags["vacation_days_in_cycle"] = df_bags.apply(vacation_days_during_cycle, axis=1)
     return df_bags
@@ -291,13 +300,25 @@ def purchases_by_location(df_bags: pd.DataFrame) -> pd.Series:
     )
 
 
-def monthly_consumption(df_prep: pd.DataFrame) -> pd.DataFrame:
+def monthly_consumption(df_prep: pd.DataFrame, df_vacations: pd.DataFrame | None = None) -> pd.DataFrame:
     df_prep = df_prep.copy()
     df_prep["month_period"] = df_prep["prepared_timestamp"].dt.to_period("M")
     monthly = df_prep.groupby("month_period").agg(
         total_cups=("cups_prepared", "sum"),
     )
-    monthly["active_days"] = monthly.index.to_timestamp().days_in_month
+    month_starts = monthly.index.to_timestamp()
+    days_in_month = month_starts.days_in_month
+    if df_vacations is not None and not df_vacations.empty:
+        month_ends = month_starts + pd.offsets.MonthEnd(0)
+        vacation_days = [
+            vacation_days_in_range(s, e, df_vacations)
+            for s, e in zip(month_starts, month_ends)
+        ]
+    else:
+        vacation_days = 0
+    # dias en casa: total del mes menos los que estuve de viaje (minimo 1 para no dividir entre 0
+    # si un mes entero se fue de vacaciones).
+    monthly["active_days"] = np.maximum(days_in_month - np.array(vacation_days), 1)
     monthly["cups_per_day"] = monthly["total_cups"] / monthly["active_days"]
     return monthly
 

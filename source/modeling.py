@@ -176,7 +176,13 @@ def historical_rate_baseline_mae(df_bags: pd.DataFrame) -> Optional[float]:
     ].copy()
     if len(closed) < 5:
         return None
-    closed["cups_per_day"] = closed["total_cups"] / closed["cycle_days"]
+    # dias "en casa" del ciclo: si vacation_days_in_cycle no esta disponible (llamado
+    # sin haber corrido add_vacation_days_metric antes) se comporta igual que antes.
+    if "vacation_days_in_cycle" in closed.columns:
+        active_days = np.maximum(closed["cycle_days"] - closed["vacation_days_in_cycle"], 1)
+    else:
+        active_days = closed["cycle_days"]
+    closed["cups_per_day"] = closed["total_cups"] / active_days
     closed = closed.reset_index(drop=True)
     errors = []
     for i in range(len(closed)):

@@ -69,6 +69,12 @@ from report import (
 from params import CUP_FEATURES, DURATION_FEATURES
 
 
+def configure_utf8_console():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def connect_or_exit():
     cfg = load_config()
     try:
@@ -81,6 +87,7 @@ def connect_or_exit():
 
 
 def main():
+    configure_utf8_console()
     cfg, conn = connect_or_exit()
 
     df_bags = clean_bags(fetch_bags(conn))
@@ -147,7 +154,7 @@ def main():
     )
 
     active_bag = df_predicted[df_predicted["status"] == "ACTIVE"]
-    active_bag_eta = add_bag_eta(active_bag, "predicted_cycle_days")
+    active_bag_eta = add_bag_eta(active_bag, "predicted_cycle_days", df_vacations)
     if not active_bag_eta.empty:
         row = active_bag_eta.iloc[0]
         insert_bag_prediction(
@@ -162,12 +169,12 @@ def main():
     monthly = monthly_consumption(df_prep, df_vacations)
     monthly = flag_atypical_months(monthly, df_vacations, df_visits)
     forecast = forecast_next_month(monthly)
-    active_forecast = forecast_active_bag_completion(active_bag_eta, forecast)
+    active_forecast = forecast_active_bag_completion(active_bag_eta, forecast, df_vacations)
     print_bag_status(active_bag_eta, active_forecast)
 
     # 4. Patrones de consumo
-    seasonal = seasonal_consumption(df_prep, season_name)
-    seasonal_climate = seasonal_consumption(df_prep, climate_season)
+    seasonal = seasonal_consumption(monthly, season_name)
+    seasonal_climate = seasonal_consumption(monthly, climate_season)
     print_monthly_seasonal(monthly, seasonal, seasonal_climate)
     print_cup_breakdown(cup_size_breakdown(df_prep))
     print_weather_and_trend(

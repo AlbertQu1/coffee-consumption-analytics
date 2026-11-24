@@ -233,29 +233,54 @@ def add_visit_days_metric(df_bags: pd.DataFrame, df_visits: pd.DataFrame) -> pd.
     df_bags["visit_days_in_cycle"] = df_bags.apply(visit_days_during_cycle, axis=1)
     return df_bags
 
-def add_bag_eta(df_bags: pd.DataFrame, ml_days_col: str) -> pd.DataFrame:
+def add_days_at_home(start_date, home_days: float, df_vacations: pd.DataFrame | None):
+    """Avanza desde start_date los dias en casa indicados, saltando los dias que
+    caen dentro de un viaje registrado (viajes futuros ya capturados en Vacaciones)."""
+    current = pd.Timestamp(start_date)
+    remaining = float(home_days)
+    for _ in range(3650):  # tope de seguridad: 10 anos
+        if remaining <= 0:
+            break
+        current += pd.Timedelta(days=1)
+        if vacation_days_in_range(current, current, df_vacations if df_vacations is not None else pd.DataFrame()) == 0:
+            remaining -= 1
+    return current
+
+def add_bag_eta(
+    df_bags: pd.DataFrame, ml_days_col: str, df_vacations: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """ETA por ritmo: gramos restantes / gramos por dia EN CASA (se restan los dias de
+    viaje del ciclo) y la fecha salta los viajes futuros. El modelo de duracion solo se
+    usa si la bolsa todavia no tiene consumo registrado."""
     df_bags = df_bags.copy()
+    today = pd.Timestamp(datetime.now().date())
     df_bags["remaining_grams"] = np.maximum(
         0, df_bags["weight_grams"] - df_bags["consumed_grams"]
     )
+    vacation_days = (
+        df_bags["vacation_days_in_cycle"] if "vacation_days_in_cycle" in df_bags else 0
+    )
+    df_bags["home_days_in_cycle"] = np.maximum(df_bags["cycle_days"] - vacation_days, 1)
     df_bags["observed_rate_g_per_day"] = np.where(
-        df_bags["cycle_days"] > 0,
-        df_bags["consumed_grams"] / df_bags["cycle_days"],
+        df_bags["consumed_grams"] > 0,
+        df_bags["consumed_grams"] / df_bags["home_days_in_cycle"],
         0,
     )
-    df_bags["days_by_rate"] = np.where(
+    df_bags["remaining_home_days"] = np.where(
         df_bags["observed_rate_g_per_day"] > 0,
-        df_bags["cycle_days"]
-        + df_bags["remaining_grams"] / df_bags["observed_rate_g_per_day"],
-        df_bags[ml_days_col],
+        df_bags["remaining_grams"] / df_bags["observed_rate_g_per_day"],
+        np.maximum(df_bags[ml_days_col] - df_bags["cycle_days"], 0),
     )
-    df_bags["predicted_total_days"] = np.maximum(
-        df_bags[ml_days_col], df_bags["days_by_rate"]
+    df_bags["estimated_close_date"] = pd.Series(
+        [
+            add_days_at_home(today, d, df_vacations)
+            for d in df_bags["remaining_home_days"]
+        ],
+        index=df_bags.index,
+        dtype="datetime64[ns]",
     )
-    df_bags["remaining_days"] = df_bags["predicted_total_days"] - df_bags["cycle_days"]
-    df_bags["estimated_close_date"] = df_bags["opened_date"] + pd.to_timedelta(
-        (df_bags["predicted_total_days"].round() - 1).clip(lower=0), unit="D"
-    )
+    df_bags["remaining_days"] = (df_bags["estimated_close_date"] - today).dt.days
+    df_bags["predicted_total_days"] = df_bags["cycle_days"] + df_bags["remaining_days"]
     return df_bags
 
 
@@ -307,9 +332,13 @@ def monthly_consumption(df_prep: pd.DataFrame, df_vacations: pd.DataFrame | None
         total_cups=("cups_prepared", "sum"),
     )
     month_starts = monthly.index.to_timestamp()
-    days_in_month = month_starts.days_in_month
+    today = pd.Timestamp(datetime.now().date())
+    # el mes en curso solo cuenta hasta hoy, no el mes completo
+    month_ends = (month_starts + pd.offsets.MonthEnd(0)).where(
+        month_starts + pd.offsets.MonthEnd(0) < today, today
+    )
+    days_in_month = (month_ends - month_starts).days + 1
     if df_vacations is not None and not df_vacations.empty:
-        month_ends = month_starts + pd.offsets.MonthEnd(0)
         vacation_days = [
             vacation_days_in_range(s, e, df_vacations)
             for s, e in zip(month_starts, month_ends)
@@ -415,12 +444,15 @@ def closing_day_summary(df_bags: pd.DataFrame) -> dict:
     }
 
 
-def seasonal_consumption(df_prep: pd.DataFrame, season_func) -> pd.DataFrame:
-    df_prep = df_prep.copy()
-    df_prep["season"] = df_prep["prepared_timestamp"].dt.month.apply(season_func)
-    seasonal = df_prep.groupby("season").agg(
-        total_cups=("cups_prepared", "sum"),
-        active_days=("prepared_timestamp", lambda s: s.dt.date.nunique()),
+def seasonal_consumption(monthly: pd.DataFrame, season_func) -> pd.DataFrame:
+    """Tazas/dia por temporada usando los dias EN CASA de cada mes (los de
+    monthly_consumption), no los dias con registro: antes de oct-2026 los registros
+    venian en lotes con fechas interpoladas y eso inflaba el promedio."""
+    m = monthly.reset_index()
+    m["season"] = m["month_period"].dt.month.apply(season_func)
+    seasonal = m.groupby("season").agg(
+        total_cups=("total_cups", "sum"),
+        active_days=("active_days", "sum"),
     )
     seasonal["cups_per_day"] = seasonal["total_cups"] / seasonal["active_days"]
     return seasonal
@@ -546,18 +578,33 @@ def last_five_bags_performance(
 
 
 def forecast_active_bag_completion(
-    active_bag: pd.DataFrame, forecast: dict
+    active_bag: pd.DataFrame, forecast: dict, df_vacations: pd.DataFrame | None = None
 ) -> pd.DataFrame:
+    """ETA por temporada: tazas que le quedan a la bolsa (gramos restantes / gramos
+    por taza reales de ESTA bolsa) entre las tazas/dia del mismo mes del ano pasado.
+    Ya no depende de las tazas predichas por el modelo."""
     active_bag = active_bag.copy()
+    today = pd.Timestamp(datetime.now().date())
     cups_per_day_forecast = forecast.get("cups_per_day")
     if cups_per_day_forecast and cups_per_day_forecast > 0:
-        remaining_cups = np.maximum(
-            0, active_bag["predicted_total_cups"] - active_bag["total_cups"]
+        grams_per_cup = np.where(
+            active_bag["total_cups"] > 0,
+            active_bag["consumed_grams"] / active_bag["total_cups"],
+            np.nan,
         )
-        active_bag["forecast_remaining_days"] = remaining_cups / cups_per_day_forecast
-        active_bag["forecast_completion_date"] = pd.Timestamp(
-            datetime.now().date()
-        ) + pd.to_timedelta(active_bag["forecast_remaining_days"], unit="D")
+        remaining_cups = active_bag["remaining_grams"] / grams_per_cup
+        home_days = remaining_cups / cups_per_day_forecast
+        active_bag["forecast_completion_date"] = pd.Series(
+            [
+                add_days_at_home(today, d, df_vacations) if pd.notna(d) else pd.NaT
+                for d in home_days
+            ],
+            index=active_bag.index,
+            dtype="datetime64[ns]",
+        )
+        active_bag["forecast_remaining_days"] = (
+            active_bag["forecast_completion_date"] - today
+        ).dt.days
     else:
         active_bag["forecast_remaining_days"] = np.nan
         active_bag["forecast_completion_date"] = pd.NaT
@@ -575,7 +622,10 @@ def weather_consumption_correlation(df_bags: pd.DataFrame) -> dict:
     valid = df_bags[
         df_bags["avg_precipitation"].notna() & (df_bags["cycle_days"] > 0)
     ].copy()
-    valid["cups_per_day"] = valid["total_cups"] / valid["cycle_days"]
+    # tazas por dia EN CASA: se restan los dias de viaje del ciclo
+    vacation_days = valid["vacation_days_in_cycle"] if "vacation_days_in_cycle" in valid else 0
+    home_days = np.maximum(valid["cycle_days"] - vacation_days, 1)
+    valid["cups_per_day"] = valid["total_cups"] / home_days
     return {
         "precipitation_correlation": round(valid["avg_precipitation"].corr(valid["cups_per_day"]), 3),
         "temperature_correlation": round(valid["avg_temp"].corr(valid["cups_per_day"]), 3),
@@ -586,7 +636,8 @@ def consumption_trend(monthly: pd.DataFrame) -> dict:
     if len(monthly) < 2:
         return {"trend_direction": None, "slope": None}
     y = monthly["cups_per_day"].values
-    x = np.arange(len(y))
+    # meses reales transcurridos (respeta huecos como sep-2026), no 0..n
+    x = np.array([p.year * 12 + p.month for p in monthly.index], dtype=float)
     slope = np.polyfit(x, y, 1)[0]
     direction = "increasing" if slope > 0 else "decreasing" if slope < 0 else "stable"
     return {"slope": round(float(slope), 4), "trend_direction": direction}
